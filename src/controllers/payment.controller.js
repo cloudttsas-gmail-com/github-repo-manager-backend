@@ -10,6 +10,7 @@ import AppError from '../utils/AppError.js';
 import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
+import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
 
 const migrateLegacyPayments = async (tenantId, companyId) => {
   try {
@@ -193,7 +194,7 @@ export const getPayments = async (req, res, next) => {
         },
         createdAt: qObj.createdAt,
         updatedAt: qObj.updatedAt,
-        receiptUrl: firstQuota?.receiptUrl || null,
+        receiptUrl: signReceiptUrl(firstQuota?.receiptUrl) || null,
       };
     });
 
@@ -230,11 +231,11 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
   
   if (fullQuota && fullQuota.contract && fullQuota.contract.client) {
     const apiUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
-    const receiptUrl = `${apiUrl}/api/public/receipt/${quotaId}`;
-    const statementUrl = `${apiUrl}/api/public/statement/${fullQuota.contract._id}`;
+    const receiptUrl = publicLinkUrl('receipt', quotaId, apiUrl);
+    const statementUrl = publicLinkUrl('statement', fullQuota.contract._id, apiUrl);
     
     // Update quota with receiptUrl if not set
-    if (!fullQuota.receiptUrl) {
+    if (fullQuota.receiptUrl !== receiptUrl) {
       await Quota.findByIdAndUpdate(quotaId, { receiptUrl });
     }
     

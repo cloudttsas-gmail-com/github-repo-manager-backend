@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { isValidPublicLink } from '../utils/publicLinks.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
@@ -24,8 +25,15 @@ export const getReceiptPDF = async (req, res, next) => {
     if (quotaId) quotaId = quotaId.replace(/[^a-fA-F0-9]/g, '');
     if (attemptId) attemptId = attemptId.replace(/[^a-fA-F0-9]/g, '');
 
-    const { receiptNumber, attemptId: queryAttemptId } = req.query;
+    const { receiptNumber, attemptId: queryAttemptId, s: signature } = req.query;
     const effectiveAttemptId = attemptId || (queryAttemptId ? queryAttemptId.replace(/[^a-fA-F0-9]/g, '') : null);
+
+    const signedOk = effectiveAttemptId
+      ? isValidPublicLink('receipt-attempt', effectiveAttemptId, signature)
+      : isValidPublicLink('receipt', quotaId, signature);
+    if (!signedOk) {
+      return next(new AppError('Enlace no válido. Pide a tu inmobiliaria que te reenvíe el recibo.', 403));
+    }
 
     let attempt = null;
     let quota = null;
@@ -213,6 +221,10 @@ export const getStatementPDF = async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+
+    if (!isValidPublicLink('statement', req.params.contractId, req.query.s)) {
+      return next(new AppError('Enlace no válido. Pide a tu inmobiliaria que te reenvíe el estado de cuenta.', 403));
+    }
 
     let { contractId } = req.params;
     contractId = contractId.replace(/[^a-fA-F0-9]/g, '');

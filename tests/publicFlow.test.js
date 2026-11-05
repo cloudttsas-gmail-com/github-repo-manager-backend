@@ -8,6 +8,7 @@ import Company from '../src/models/Company.js';
 import Client from '../src/models/Client.js';
 import Bank from '../src/models/Bank.js';
 import VerificationToken from '../src/models/VerificationToken.js';
+import { publicLinkUrl } from '../src/utils/publicLinks.js';
 
 const stamp = Date.now();
 const password = 'Password123!';
@@ -97,5 +98,21 @@ describe('Public payment flow and bank scoping', () => {
     expect(after.acronym).toBe('PTG2');
     expect(after.tenantId.toString()).toBe(a.tenantId.toString());
     expect(after.companyId.toString()).toBe(a.companyId.toString());
+  });
+  it('receipt and statement links need their own signature', async () => {
+    const id = '0123456789abcdef01234567';
+    const other = 'fedcba9876543210fedcba98';
+    const signed = (kind, rid) => publicLinkUrl(kind, rid, '').replace(/^.*\/api/, '/api');
+    const statuses = await Promise.all([
+      request(app).get(`/api/public/statement/${id}`),
+      request(app).get(`/api/public/statement/${id}?s=forged`),
+      request(app).get(signed('statement', other).replace(other, id)),
+      request(app).get(signed('receipt', id).replace('/receipt/', '/statement/')),
+      request(app).get(`/api/public/receipt/${id}`),
+      request(app).get(signed('statement', id)),
+      request(app).get(signed('receipt', id)),
+    ].map((p) => p.then((r) => r.statusCode)));
+    // a valid signature passes the check and reaches the lookup (404: no such document)
+    expect(statuses).toEqual([403, 403, 403, 403, 403, 404, 404]);
   });
 });

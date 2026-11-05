@@ -2,6 +2,7 @@ import Quota from '../models/Quota.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
 import { sendEmail, sendWhatsApp } from './notifications.js';
+import { publicLinkUrl, signReceiptUrl } from './publicLinks.js';
 
 /**
  * Send a single consolidated notification when multiple quotas are paid/processed in cascade
@@ -31,15 +32,16 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
     const companyName = company?.name || 'Inmobiliaria';
 
     const apiUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
-    const statementUrl = `${apiUrl}/api/public/statement/${contract._id}`;
+    const statementUrl = publicLinkUrl('statement', contract._id, apiUrl);
 
     // Ensure all quotas have receiptUrl set
     const totalAmount = quotas.reduce((sum, q) => sum + (q.amountPaid || q.value), 0);
     const quotaDetailsList = [];
 
     for (const q of quotas) {
-      if (!q.receiptUrl) {
-        q.receiptUrl = `${apiUrl}/api/public/receipt/${q._id}`;
+      const signedUrl = q.receiptUrl ? signReceiptUrl(q.receiptUrl) : publicLinkUrl('receipt', q._id, apiUrl);
+      if (q.receiptUrl !== signedUrl) {
+        q.receiptUrl = signedUrl;
         await Quota.findByIdAndUpdate(q._id, { receiptUrl: q.receiptUrl });
       }
       quotaDetailsList.push(`Cuota #${q.number} (${q.type === 'inicial' ? 'inicial' : 'ordinaria'}): $${(q.amountPaid || q.value).toLocaleString()}`);

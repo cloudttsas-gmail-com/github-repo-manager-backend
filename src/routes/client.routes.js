@@ -11,6 +11,7 @@ import { logAudit } from '../utils/auditLogger.js';
 import Quota from '../models/Quota.js';
 import UserAccount from '../models/UserAccount.js';
 import User from '../models/User.js';
+import { publicLinkUrl } from '../utils/publicLinks.js';
 
 const router = express.Router();
 
@@ -250,6 +251,8 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
         populate: { path: 'accountId', select: 'fullName email' },
       });
     
+    const apiUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
+
     // For each contract, get stats
     const contractsWithStats = await Promise.all(contracts.map(async (contract) => {
       const contractId = new mongoose.Types.ObjectId(contract._id);
@@ -302,7 +305,8 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
         valorCuota: contract.installmentValue || 0,
         diasMora: 0, 
         status: 'ACTIVO',
-        quotas: allQuotas,
+        statementUrl: publicLinkUrl('statement', contract._id, apiUrl),
+        quotas: allQuotas.map((q) => ({ ...q.toObject(), receiptUrl: publicLinkUrl('receipt', q._id, apiUrl) })),
       };
     }));
 
