@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
@@ -414,8 +415,9 @@ export const reportPayment = async (req, res, next) => {
 
     const VerificationToken = (await import('../models/VerificationToken.js')).default;
     const verifiedSession = await VerificationToken.findOne({
-      token: otpToken,
+      token: String(otpToken),
       isUsed: false,
+      verifiedAt: { $ne: null },
       expiresAt: { $gt: new Date() }
     });
 
@@ -618,8 +620,7 @@ export const verifyOTPCodePublic = async (req, res, next) => {
 
     const VerificationToken = (await import('../models/VerificationToken.js')).default;
     const verification = await VerificationToken.findOne({
-      token,
-      code,
+      token: String(token),
       companyId: company._id,
       isUsed: false,
       expiresAt: { $gt: new Date() }
@@ -627,6 +628,20 @@ export const verifyOTPCodePublic = async (req, res, next) => {
 
     if (!verification) {
       return next(new AppError('Código incorrecto, expirado o ya utilizado', 400));
+    }
+
+    const expected = Buffer.from(String(verification.code));
+    const received = Buffer.from(String(code));
+    if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+      verification.attempts = (verification.attempts || 0) + 1;
+      if (verification.attempts >= 5) verification.isUsed = true;
+      await verification.save();
+      return next(new AppError('Código incorrecto, expirado o ya utilizado', 400));
+    }
+
+    if (!verification.verifiedAt) {
+      verification.verifiedAt = new Date();
+      await verification.save();
     }
 
     // Load client info since they verified their identity

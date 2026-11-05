@@ -315,3 +315,44 @@ export const hasPermission = (role, permission) => {
   const permissions = ROLE_PERMISSIONS[role] || [];
   return permissions.includes(permission) || permissions.includes('ALL');
 };
+
+/**
+ * Role hierarchy used when one team member creates or manages another.
+ * A higher number outranks a lower one; equal ranks cannot manage each other.
+ */
+export const ROLE_RANK = {
+  superadmin: 100,
+  tenant_admin: 90,
+  company_admin: 80,
+  administrador: 80,
+  gerente: 70,
+  jefe_cartera: 60,
+  contador: 50,
+  auxiliar_cartera: 40,
+  auxiliar_contable: 40,
+  ejecutivo_comercial: 30,
+  vendedor: 30,
+  agent: 30,
+  cliente: 10,
+};
+
+const TEAM_OWNERS = ['superadmin', 'tenant_admin'];
+
+/**
+ * Whether `actorRole` may give `targetRole` to a team member.
+ * Superadmin is a platform role and is never assigned from a team.
+ */
+export const canAssignRole = (actorRole, targetRole) => {
+  if (!(targetRole in ROLE_RANK) || targetRole === 'superadmin') return false;
+  if (TEAM_OWNERS.includes(actorRole)) return true;
+  return ROLE_RANK[targetRole] < (ROLE_RANK[actorRole] || 0);
+};
+
+/**
+ * Whether `actorRole` may edit, remove or reset the password of a member whose role is `memberRole`.
+ */
+export const canManageMember = (actorRole, memberRole) => {
+  if (memberRole === 'superadmin') return actorRole === 'superadmin';
+  if (TEAM_OWNERS.includes(actorRole)) return true;
+  return (ROLE_RANK[memberRole] || 0) < (ROLE_RANK[actorRole] || 0);
+};

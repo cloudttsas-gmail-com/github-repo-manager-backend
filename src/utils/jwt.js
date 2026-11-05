@@ -21,7 +21,35 @@ export const generateRefreshToken = (accountId) => {
 };
 
 export const verifyAccessToken = (token) => {
-  return jwt.verify(token, process.env.JWT_SECRET);
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  // Short-lived purpose tokens (e.g. tenant selection) are signed with the same
+  // secret but never grant a session.
+  if (decoded.purpose || !decoded.userId) {
+    throw new jwt.JsonWebTokenError('Not an access token');
+  }
+  return decoded;
+};
+
+const TENANT_SELECTION_PURPOSE = 'tenant_selection';
+
+/**
+ * Short-lived token issued after a valid password check when the account
+ * belongs to several teams. It is the only proof /auth/select-tenant accepts.
+ */
+export const generateTenantSelectionToken = (accountId) => {
+  return jwt.sign(
+    { accountId: accountId.toString(), purpose: TENANT_SELECTION_PURPOSE },
+    process.env.JWT_SECRET,
+    { expiresIn: '10m' }
+  );
+};
+
+export const verifyTenantSelectionToken = (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded.purpose !== TENANT_SELECTION_PURPOSE || !decoded.accountId) {
+    throw new jwt.JsonWebTokenError('Not a tenant selection token');
+  }
+  return decoded;
 };
 
 export const verifyRefreshToken = (token) => {

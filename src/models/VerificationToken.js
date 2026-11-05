@@ -38,6 +38,15 @@ const verificationTokenSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  attempts: {
+    type: Number,
+    default: 0,
+  },
+  // Set once the code is checked; only verified tokens can report a payment.
+  verifiedAt: {
+    type: Date,
+    default: null,
+  },
   expiresAt: {
     type: Date,
     required: true,

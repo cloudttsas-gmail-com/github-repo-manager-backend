@@ -5,6 +5,7 @@ import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AuditLog from '../models/AuditLog.js';
 import { sendEmail } from '../utils/notifications.js';
 import AppError from '../utils/AppError.js';
+import { canAssignRole, canManageMember } from '../config/permissions.js';
 
 /**
  * Get all users (memberships) within the current tenant.
@@ -143,13 +144,8 @@ export const createUser = async (req, res, next) => {
       companyIds = [];
     }
 
-    const validRoles = [
-      'tenant_admin', 'company_admin', 'agent', 'vendedor',
-      'administrador', 'gerente', 'jefe_cartera', 'auxiliar_cartera',
-      'contador', 'auxiliar_contable', 'ejecutivo_comercial', 'cliente', 'superadmin'
-    ];
-    if (!validRoles.includes(role)) {
-      return next(new AppError(`Invalid role. Must be one of: ${validRoles.join(', ')}`, 400));
+    if (!canAssignRole(req.user.role, role)) {
+      return next(new AppError('No puedes asignar ese rol', 403));
     }
 
     // Check if a membership already exists in this tenant for this email
@@ -234,6 +230,19 @@ export const updateUser = async (req, res, next) => {
       return next(new AppError('User not found in this team', 404));
     }
 
+    if (!canManageMember(req.user.role, membership.role)) {
+      return next(new AppError('No puedes modificar a este usuario', 403));
+    }
+
+    const isSelf = membership._id.toString() === req.user.userId?.toString();
+    if (isSelf && ((role && role !== membership.role) || (status && status !== membership.status))) {
+      return next(new AppError('No puedes cambiar tu propio rol ni tu estado', 403));
+    }
+
+    if (role && role !== membership.role && !canAssignRole(req.user.role, role)) {
+      return next(new AppError('No puedes asignar ese rol', 403));
+    }
+
     if (role) membership.role = role;
     if (status) membership.status = status;
     await membership.save();
@@ -308,6 +317,14 @@ export const changeUserPassword = async (req, res, next) => {
       return next(new AppError('User not found in this team', 404));
     }
 
+    if (membership._id.toString() === req.user.userId?.toString()) {
+      return next(new AppError('Para cambiar tu propia contraseña usa tu perfil', 400));
+    }
+
+    if (!canManageMember(req.user.role, membership.role)) {
+      return next(new AppError('No puedes cambiar la contraseña de este usuario', 403));
+    }
+
     const account = await UserAccount.findById(membership.accountId);
     if (!account) {
       return next(new AppError('User account not found', 404));
@@ -345,6 +362,10 @@ export const deleteUser = async (req, res, next) => {
 
     if (!membership) {
       return next(new AppError('User not found in this team', 404));
+    }
+
+    if (!canManageMember(req.user.role, membership.role)) {
+      return next(new AppError('No puedes eliminar a este usuario', 403));
     }
 
     // Remove company assignments

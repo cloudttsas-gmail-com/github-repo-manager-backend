@@ -4,10 +4,13 @@ import Tenant from '../models/Tenant.js';
 import Company from '../models/Company.js';
 import UserCompany from '../models/UserCompany.js';
 import AppError from '../utils/AppError.js';
+import crypto from 'crypto';
 import {
   generateAccessToken,
   generateRefreshToken,
   verifyRefreshToken,
+  generateTenantSelectionToken,
+  verifyTenantSelectionToken,
   setTokenCookies,
   clearTokenCookies,
 } from '../utils/jwt.js';
@@ -249,11 +252,7 @@ export const login = async (req, res, next) => {
         success: true,
         data: {
           requiresOtp: true,
-          clientId: client._id,
           phone: client.phone,
-          accountId: account._id,
-          userId: clientMembership._id,
-          tenantId: clientMembership.tenantId._id,
           otpToken,
         },
       });
@@ -283,7 +282,7 @@ export const login = async (req, res, next) => {
       success: true,
       data: {
         requiresTenantSelection: true,
-        accountId: account._id,
+        selectionToken: generateTenantSelectionToken(account._id),
         memberships: activeMemberships.map((m) => ({
           userId: m._id,
           tenantId: m.tenantId._id,
@@ -298,22 +297,29 @@ export const login = async (req, res, next) => {
   }
 };
 
+const MAX_OTP_ATTEMPTS = 5;
+
+const codesMatch = (expected, received) => {
+  const a = Buffer.from(String(expected));
+  const b = Buffer.from(String(received));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
 /**
  * POST /auth/verify-client-otp
+ * The session is issued for the client the code was sent to, never for ids sent in the body.
  */
 export const verifyClientOtp = async (req, res, next) => {
   try {
-    const { accountId, userId, tenantId, clientId, otpCode, otpToken } = req.body;
+    const { otpCode, otpToken } = req.body;
 
-    if (!accountId || !userId || !tenantId || !clientId || !otpCode) {
+    if (typeof otpToken !== 'string' || !otpToken || !otpCode) {
       return next(new AppError('Todos los campos son requeridos para la verificación', 400));
     }
 
-    // Verify OTP code
     const VerificationToken = (await import('../models/VerificationToken.js')).default;
     const vToken = await VerificationToken.findOne({
       token: otpToken,
-      code: otpCode,
       isUsed: false,
       expiresAt: { $gt: new Date() },
     });
@@ -322,24 +328,30 @@ export const verifyClientOtp = async (req, res, next) => {
       return next(new AppError('Código de verificación incorrecto o expirado', 400));
     }
 
-    // Mark as used
-    vToken.isUsed = true; // Matches VerificationToken schema field
-    await vToken.save();
-
-    const account = await UserAccount.findById(accountId);
-    if (!account || account.status !== 'active') {
-      return next(new AppError('Cuenta no encontrada o inactiva', 401));
+    if (!codesMatch(vToken.code, otpCode)) {
+      vToken.attempts = (vToken.attempts || 0) + 1;
+      if (vToken.attempts >= MAX_OTP_ATTEMPTS) vToken.isUsed = true;
+      await vToken.save();
+      return next(new AppError('Código de verificación incorrecto o expirado', 400));
     }
 
+    vToken.isUsed = true;
+    await vToken.save();
+
     const membership = await User.findOne({
-      _id: userId,
-      accountId: account._id,
-      tenantId,
+      clientId: vToken.clientId,
+      tenantId: vToken.tenantId,
+      role: 'cliente',
       status: 'active',
     }).populate('tenantId', 'name plan status activeModules subscriptionStart subscriptionEnd');
 
-    if (!membership) {
+    if (!membership || membership.tenantId?.status === 'suspended') {
       return next(new AppError('Membresía no encontrada o inactiva', 401));
+    }
+
+    const account = await UserAccount.findById(membership.accountId);
+    if (!account || account.status !== 'active') {
+      return next(new AppError('Cuenta no encontrada o inactiva', 401));
     }
 
     const payload = await buildTokenPayload(account, membership);
@@ -363,13 +375,21 @@ export const verifyClientOtp = async (req, res, next) => {
 /**
  * POST /auth/select-tenant
  * Step 2 (only if multiple memberships): select which tenant to work with.
+ * Requires the selection token that /auth/login returns after checking the password.
  */
 export const selectTenant = async (req, res, next) => {
   try {
-    const { accountId, tenantId } = req.body;
+    const { selectionToken, tenantId } = req.body;
 
-    if (!accountId || !tenantId) {
-      return next(new AppError('accountId and tenantId are required', 400));
+    if (!selectionToken || !tenantId) {
+      return next(new AppError('selectionToken and tenantId are required', 400));
+    }
+
+    let accountId;
+    try {
+      ({ accountId } = verifyTenantSelectionToken(selectionToken));
+    } catch {
+      return next(new AppError('La selección de equipo expiró. Inicia sesión de nuevo.', 401));
     }
 
     const account = await UserAccount.findById(accountId);
