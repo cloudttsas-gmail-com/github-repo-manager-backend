@@ -539,7 +539,10 @@ export const getCompanyAccountsPublic = async (req, res, next) => {
         nit: company.nit || '',
         address: company.address || '',
         phone: company.phone || '',
-        bankAccounts: company.bankAccounts ? company.bankAccounts.filter(acc => acc.isActive) : []
+        // What a buyer needs to pay; the Siigo accounting account stays internal
+        bankAccounts: (company.bankAccounts || [])
+          .filter((acc) => acc.isActive)
+          .map(({ _id, banco, tipoCuenta, numeroCuenta, titular, qrCode, isActive }) => ({ _id, banco, tipoCuenta, numeroCuenta, titular, qrCode, isActive })),
       }
     });
   } catch (error) {

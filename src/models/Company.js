@@ -89,11 +89,24 @@ const companySchema = new mongoose.Schema({
 
 companySchema.index({ tenantId: 1, status: 1 });
 
-companySchema.methods.toJSON = function () {
-  const obj = this.toObject();
-  delete obj.__v;
-  return obj;
-};
+// Set only by the Meta connection flow (whatsapp.controller); never sent to clients
+export const WHATSAPP_CONNECTION_FIELDS = [
+  'whatsappApiKey', 'whatsappAccessToken', 'whatsappWabaId', 'whatsappPhoneId',
+  'whatsappDisplayPhone', 'whatsappVerifiedName',
+];
+const SECRET_INTEGRATION_FIELDS = ['whatsappApiKey', 'whatsappAccessToken'];
+
+// A schema transform (not a toJSON method) also applies when a company is populated into another document
+companySchema.set('toJSON', {
+  transform: (doc, obj) => {
+    delete obj.__v;
+    if (obj.integrations) {
+      obj.integrations.whatsappConnected = Boolean(obj.integrations.whatsappAccessToken);
+      SECRET_INTEGRATION_FIELDS.forEach((field) => delete obj.integrations[field]);
+    }
+    return obj;
+  },
+});
 
 const Company = mongoose.model('Company', companySchema);
 

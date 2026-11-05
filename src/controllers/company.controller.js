@@ -1,4 +1,4 @@
-import Company from '../models/Company.js';
+import Company, { WHATSAPP_CONNECTION_FIELDS } from '../models/Company.js';
 import Tenant from '../models/Tenant.js';
 import AppError from '../utils/AppError.js';
 
@@ -150,7 +150,14 @@ export const updateCompany = async (req, res, next) => {
     if (phone !== undefined) company.phone = phone;
     if (email !== undefined) company.email = email;
     if (bankInfo !== undefined) company.bankInfo = bankInfo;
-    if (integrations !== undefined) company.integrations = integrations;
+    if (integrations !== undefined) {
+      // The WhatsApp connection is managed by the Meta flow: keep it as stored
+      const current = company.integrations?.toObject ? company.integrations.toObject() : (company.integrations || {});
+      const next = { ...current, ...integrations };
+      WHATSAPP_CONNECTION_FIELDS.forEach((field) => { next[field] = current[field]; });
+      delete next.whatsappConnected;
+      company.integrations = next;
+    }
     if (bankAccounts !== undefined) company.bankAccounts = bankAccounts;
     if (logo !== undefined) company.logo = logo;
     if (projectLogo !== undefined) company.projectLogo = projectLogo;
