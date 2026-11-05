@@ -128,3 +128,18 @@ describe('parseBusinessDate', () => {
     expect(parseBusinessDate('not a date', fallback)).toBe(fallback);
   });
 });
+
+describe('unsigned public links grace period', () => {
+  const id = '0123456789abcdef01234567';
+  afterEach(() => { delete process.env.PUBLIC_LINKS_UNSIGNED_UNTIL; });
+
+  it('old unsigned links open only while the grace date has not passed', async () => {
+    const get = (q = '') => request(app).get(`/api/public/statement/${id}${q}`).then((r) => r.statusCode);
+    expect(await get()).toBe(403);
+    process.env.PUBLIC_LINKS_UNSIGNED_UNTIL = '2999-12-31';
+    expect(await get()).toBe(404);
+    expect(await get('?s=forged')).toBe(403);
+    process.env.PUBLIC_LINKS_UNSIGNED_UNTIL = '2000-01-01';
+    expect(await get()).toBe(403);
+  });
+});

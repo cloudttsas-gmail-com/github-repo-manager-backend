@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { isValidPublicLink } from '../utils/publicLinks.js';
+import { isValidPublicLink, allowsUnsignedLink } from '../utils/publicLinks.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
@@ -32,7 +32,7 @@ export const getReceiptPDF = async (req, res, next) => {
     const signedOk = effectiveAttemptId
       ? isValidPublicLink('receipt-attempt', effectiveAttemptId, signature)
       : isValidPublicLink('receipt', quotaId, signature);
-    if (!signedOk) {
+    if (!signedOk && !allowsUnsignedLink(signature)) {
       return next(new AppError('Enlace no válido. Pide a tu inmobiliaria que te reenvíe el recibo.', 403));
     }
 
@@ -223,7 +223,7 @@ export const getStatementPDF = async (req, res, next) => {
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    if (!isValidPublicLink('statement', req.params.contractId, req.query.s)) {
+    if (!isValidPublicLink('statement', req.params.contractId, req.query.s) && !allowsUnsignedLink(req.query.s)) {
       return next(new AppError('Enlace no válido. Pide a tu inmobiliaria que te reenvíe el estado de cuenta.', 403));
     }
 

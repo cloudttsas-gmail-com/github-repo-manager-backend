@@ -23,6 +23,18 @@ export const isValidPublicLink = (kind, id, signature) => {
   return expected.length === received.length && crypto.timingSafeEqual(expected, received);
 };
 
+/**
+ * Links sent before signing existed have no `s`. They keep working until the
+ * date in PUBLIC_LINKS_UNSIGNED_UNTIL (YYYY-MM-DD); a wrong signature never does.
+ */
+export const allowsUnsignedLink = (signature, now = new Date()) => {
+  if (signature !== undefined && signature !== '') return false;
+  const until = process.env.PUBLIC_LINKS_UNSIGNED_UNTIL;
+  if (!until) return false;
+  const limit = new Date(`${until}T23:59:59-05:00`);
+  return !Number.isNaN(limit.getTime()) && now <= limit;
+};
+
 export const publicLinkUrl = (kind, id, apiUrl = process.env.API_URL || '') =>
   `${apiUrl}/api/public/${PATHS[kind]}/${id}?s=${sign(kind, String(id))}`;
 
