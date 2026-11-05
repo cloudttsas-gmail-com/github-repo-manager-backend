@@ -64,7 +64,11 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
   };
 
   // Helper to find bank accounting account
-  const getBankAccountingAccount = (paymentBanco) => {
+  const getBankAccountingAccount = (paymentBanco, bankAccountId) => {
+    if (bankAccountId) {
+      const byId = companyBankAccounts.find((acc) => acc._id?.toString() === bankAccountId.toString());
+      if (byId?.accountingAccount) return byId.accountingAccount;
+    }
     if (!paymentBanco) return defaultCuentaBanco;
     
     const cleanBancoName = paymentBanco.trim().toLowerCase();
@@ -92,7 +96,7 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
     const fechaElaboracion = formatDate(attempt.fechaPago);
     const identificacionTercero = client.idNumber || '';
     const consecutivoContrato = contract.excelRowId || lot.lotNumber || '';
-    const cuentaBanco = getBankAccountingAccount(attempt.banco);
+    const cuentaBanco = getBankAccountingAccount(attempt.banco, attempt.bankAccountId);
 
     // If the payment attempt contains multiple quota payments, split them
     if (attempt.quotas && attempt.quotas.length > 0) {

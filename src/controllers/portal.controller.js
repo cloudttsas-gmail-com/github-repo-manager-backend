@@ -11,6 +11,7 @@ import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
 import { parseBusinessDate } from '../utils/dates.js';
+import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
 
 /**
  * Get dashboard home data for the client portal
@@ -267,6 +268,22 @@ export const getMyLots = async (req, res, next) => {
 /**
  * Get all payments for the logged-in client
  */
+/**
+ * GET /api/portal/bank-accounts — the authorized accounts of the client's company
+ */
+export const getPortalBankAccounts = async (req, res, next) => {
+  try {
+    const client = await Client.findOne({ _id: req.user.clientId, tenantId: req.user.tenantId }).select('companyId');
+    if (!client) {
+      return next(new AppError('No hay un cliente asociado a esta cuenta', 400));
+    }
+    const company = await Company.findById(client.companyId).select('bankAccounts');
+    res.json({ success: true, data: { bankAccounts: publicBankAccounts(company) } });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getMyPayments = async (req, res, next) => {
   try {
     const { clientId, tenantId } = req.user;
@@ -320,14 +337,14 @@ export const getMyPayments = async (req, res, next) => {
 export const reportPortalPayment = async (req, res, next) => {
   try {
     const { clientId, tenantId } = req.user;
-    const { contractId, cuotaNumber, amount, banco, paymentMethod, fechaPago, paymentType } = req.body;
+    const { contractId, cuotaNumber, amount, banco, bankAccountId, paymentMethod, fechaPago, paymentType } = req.body;
     const file = req.file;
 
     if (!clientId) {
       return next(new AppError('No hay un cliente asociado a esta cuenta', 400));
     }
 
-    if (!contractId || !cuotaNumber || !amount || !banco || !paymentMethod) {
+    if (!contractId || !cuotaNumber || !amount || !(banco || bankAccountId) || !paymentMethod) {
       return next(new AppError('Todos los campos son requeridos', 400));
     }
 
@@ -374,7 +391,7 @@ export const reportPortalPayment = async (req, res, next) => {
       amount: paymentAmount,
       paymentType: normalizedPaymentType,
       quotaValue: quota.value,
-      banco,
+      ...(await resolveBankChoice(contract.companyId, { bankAccountId, bank: banco })),
       paymentMethod,
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,

@@ -12,6 +12,7 @@ import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
 import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
 import { parseBusinessDate } from '../utils/dates.js';
+import { resolveBankChoice } from '../utils/bankAccounts.js';
 
 const migrateLegacyPayments = async (tenantId, companyId) => {
   try {
@@ -511,7 +512,7 @@ export const rejectPayment = async (req, res, next) => {
 export const registerManualPayment = async (req, res, next) => {
   try {
     const { tenantId, companyId, role } = req.user;
-    const { quotaId, amount, bank, observations, paymentDate, fechaPago, paymentMethod, paymentOption } = req.body;
+    const { quotaId, amount, bank, bankAccountId, observations, paymentDate, fechaPago, paymentMethod, paymentOption } = req.body;
 
     const isAdmin = ['superadmin', 'tenant_admin', 'company_admin', 'administrador'].includes(role);
     if ((bank === 'Cruce de cuentas' || paymentMethod === 'Cruce de cuentas') && !isAdmin) {
@@ -692,7 +693,7 @@ export const registerManualPayment = async (req, res, next) => {
         amount: paidAmount,
         paymentType: OPTION_TO_TYPE[paymentOption] || (paidAmount >= quotaPendingValue ? 'TOTAL' : 'PARCIAL'),
         quotaValue: quota.value,
-        banco: bank || 'Efectivo',
+        ...(await resolveBankChoice(companyId, { bankAccountId, bank: bank || 'Efectivo' })),
         paymentMethod: paymentMethod || 'Efectivo',
         fechaPago: finalPaymentDate,
         comprobante: captureUrl || undefined,
@@ -871,7 +872,7 @@ export const editPayment = async (req, res, next) => {
   try {
     const { tenantId, companyId, userId, role } = req.user;
     const { id: attemptId } = req.params;
-    const { amount, bank, paymentMethod, paymentDate, observations, reason } = req.body;
+    const { amount, bank, bankAccountId, paymentMethod, paymentDate, observations, reason } = req.body;
 
     const isAdmin = ['superadmin', 'tenant_admin', 'company_admin', 'administrador'].includes(role);
     if (!isAdmin) {
@@ -925,7 +926,8 @@ export const editPayment = async (req, res, next) => {
       return next(new AppError('No se encontró una cuota asociada al contrato para aplicar el pago', 404));
     }
 
-    const finalBank = bank || attempt.banco || 'Efectivo';
+    const bankChoice = bankAccountId ? await resolveBankChoice(companyId, { bankAccountId }) : null;
+    const finalBank = bankChoice?.banco || bank || attempt.banco || 'Efectivo';
     const finalMethod = paymentMethod || attempt.paymentMethod || 'Efectivo';
     const finalDate = parseBusinessDate(paymentDate, attempt.fechaPago || new Date());
     const finalObservations = observations !== undefined ? observations : attempt.observations;
@@ -1015,6 +1017,8 @@ export const editPayment = async (req, res, next) => {
 
     // 4. Update the PaymentAttempt document
     attempt.amount = newAmount;
+    if (bankChoice) attempt.bankAccountId = bankChoice.bankAccountId;
+    else if (bank && bank !== attempt.banco) attempt.bankAccountId = null;
     attempt.banco = finalBank;
     attempt.paymentMethod = finalMethod;
     attempt.fechaPago = finalDate;

@@ -143,3 +143,44 @@ describe('unsigned public links grace period', () => {
     expect(await get()).toBe(403);
   });
 });
+
+describe('company bank accounts on payments', () => {
+  let companyId;
+  let otherCompanyId;
+  let active;
+  let inactive;
+  let foreign;
+
+  beforeAll(async () => {
+    const tenant = await Tenant.create({ name: `Bank tenant ${stamp}` });
+    const c = await Company.create({
+      tenantId: tenant._id, name: `Bank company ${stamp}`, slug: `bank-company-${stamp}`,
+      bankAccounts: [
+        { banco: 'BANCOLOMBIA', tipoCuenta: 'Ahorros', numeroCuenta: '111', accountingAccount: '11100501' },
+        { banco: 'DAVIVIENDA', tipoCuenta: 'Corriente', numeroCuenta: '222', isActive: false },
+      ],
+    });
+    const other = await Company.create({
+      tenantId: tenant._id, name: `Other bank company ${stamp}`, slug: `other-bank-company-${stamp}`,
+      bankAccounts: [{ banco: 'BBVA', tipoCuenta: 'Ahorros', numeroCuenta: '333' }],
+    });
+    companyId = c._id;
+    otherCompanyId = other._id;
+    [active, inactive] = c.bankAccounts;
+    [foreign] = other.bankAccounts;
+  });
+
+  afterAll(async () => {
+    await Company.deleteMany({ _id: { $in: [companyId, otherCompanyId] } });
+    await Tenant.deleteMany({ name: `Bank tenant ${stamp}` });
+  });
+
+  it('stores the bank of the chosen active account, and rejects inactive or foreign ones', async () => {
+    const { resolveBankChoice } = await import('../src/utils/bankAccounts.js');
+    expect(await resolveBankChoice(companyId, { bankAccountId: active._id.toString(), bank: 'whatever' }))
+      .toEqual({ banco: 'BANCOLOMBIA', bankAccountId: active._id });
+    await expect(resolveBankChoice(companyId, { bankAccountId: inactive._id.toString() })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(resolveBankChoice(companyId, { bankAccountId: foreign._id.toString() })).rejects.toMatchObject({ statusCode: 400 });
+    expect(await resolveBankChoice(companyId, { bank: 'NEQUI' })).toEqual({ banco: 'NEQUI', bankAccountId: null });
+  });
+});

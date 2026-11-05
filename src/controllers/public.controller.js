@@ -11,6 +11,7 @@ import { generateReceiptStream } from '../utils/receipt.js';
 import { getNextSequence } from '../models/Counter.js';
 import { generateStatementStream } from '../utils/statement.js';
 import { parseBusinessDate } from '../utils/dates.js';
+import { resolveBankChoice } from '../utils/bankAccounts.js';
 
 /**
  * Generate a dynamic PDF receipt for a paid quota (Public endpoint)
@@ -362,7 +363,7 @@ export const getClientInfo = async (req, res, next) => {
  */
 export const reportPayment = async (req, res, next) => {
   try {
-    const { quotaId, amount, bank, observations, paymentDate, fechaPago, paymentMethod, phone, email, otpToken, paymentType } = req.body;
+    const { quotaId, amount, bank, bankAccountId, observations, paymentDate, fechaPago, paymentMethod, phone, email, otpToken, paymentType } = req.body;
     
     if (bank === 'Cruce de cuentas' || paymentMethod === 'Cruce de cuentas') {
       return next(new AppError('No tienes permiso para reportar pagos con cruce de cuentas', 403));
@@ -460,7 +461,7 @@ export const reportPayment = async (req, res, next) => {
       amount: paymentAmount,
       paymentType: normalizedPaymentType,
       quotaValue: quota.value,
-      banco: bank,
+      ...(await resolveBankChoice(quota.companyId, { bankAccountId, bank })),
       paymentMethod,
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,

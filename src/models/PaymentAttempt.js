@@ -62,6 +62,11 @@ const paymentAttemptSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  // The company's authorized account (Company.bankAccounts) the payment went to, when chosen
+  bankAccountId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null,
+  },
   paymentMethod: {
     type: String,
     required: true,

@@ -5,6 +5,7 @@ import {
   getPortalSummary, 
   getMyLots, 
   getMyPayments,
+  getPortalBankAccounts,
   reportPortalPayment,
   getPortalReceiptPDF,
   getPortalContractDetail,
@@ -44,6 +45,7 @@ router.get('/home', getPortalHome);
 router.get('/summary', getPortalSummary);
 router.get('/lots', getMyLots);
 router.get('/payments', getMyPayments);
+router.get('/bank-accounts', getPortalBankAccounts);
 router.post('/report-payment', upload.single('comprobante'), reportPortalPayment);
 router.get('/receipt/:paymentId', getPortalReceiptPDF);
 router.get('/contract/:id', getPortalContractDetail);
