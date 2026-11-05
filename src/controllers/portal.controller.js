@@ -12,6 +12,7 @@ import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
+import { claimPaymentRequest } from '../utils/idempotency.js';
 
 /**
  * Get dashboard home data for the client portal
@@ -337,7 +338,7 @@ export const getMyPayments = async (req, res, next) => {
 export const reportPortalPayment = async (req, res, next) => {
   try {
     const { clientId, tenantId } = req.user;
-    const { contractId, cuotaNumber, amount, banco, bankAccountId, paymentMethod, fechaPago, paymentType } = req.body;
+    const { contractId, cuotaNumber, amount, banco, bankAccountId, paymentMethod, fechaPago, paymentType, requestId } = req.body;
     const file = req.file;
 
     if (!clientId) {
@@ -379,6 +380,10 @@ export const reportPortalPayment = async (req, res, next) => {
       ? String(paymentType).toUpperCase()
       : (paymentAmount >= (quota.value - (quota.amountPaid || 0)) ? 'TOTAL' : 'PARCIAL');
 
+    const bankChoice = await resolveBankChoice(contract.companyId, { bankAccountId, bank: banco });
+    // A double click or a retry with the same operation id cannot report the payment twice
+    const releaseRequest = await claimPaymentRequest(`portal:${clientId}`, requestId);
+
     const attempt = await PaymentAttempt.create({
       tenantId,
       companyId: contract.companyId,
@@ -391,11 +396,14 @@ export const reportPortalPayment = async (req, res, next) => {
       amount: paymentAmount,
       paymentType: normalizedPaymentType,
       quotaValue: quota.value,
-      ...(await resolveBankChoice(contract.companyId, { bankAccountId, bank: banco })),
+      ...bankChoice,
       paymentMethod,
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,
-      status: 'PENDIENTE'
+      status: 'PENDIENTE',
+    }).catch(async (createError) => {
+      await releaseRequest();
+      throw createError;
     });
 
     console.log('[LOG][PORTAL_REPORT_PAYMENT] Intento de pago de portal creado exitosamente:', attempt._id);

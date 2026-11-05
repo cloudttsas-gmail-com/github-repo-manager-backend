@@ -449,6 +449,18 @@ export const reportPayment = async (req, res, next) => {
       ? String(paymentType).toUpperCase()
       : (paymentAmount >= (quota.value - (quota.amountPaid || 0)) ? 'TOTAL' : 'PARCIAL');
 
+    const bankChoice = await resolveBankChoice(quota.companyId, { bankAccountId, bank });
+
+    // The verified code is single use: claim it atomically, so two submissions
+    // sent at the same time (a double click) cannot both create a payment
+    const claimed = await VerificationToken.findOneAndUpdate(
+      { _id: verifiedSession._id, isUsed: false },
+      { $set: { isUsed: true } },
+    );
+    if (!claimed) {
+      return next(new AppError('Este código ya se usó para reportar un pago. Pide uno nuevo si quieres reportar otro.', 409));
+    }
+
     const attempt = await PaymentAttempt.create({
       tenantId: quota.tenantId,
       companyId: quota.companyId,
@@ -461,18 +473,17 @@ export const reportPayment = async (req, res, next) => {
       amount: paymentAmount,
       paymentType: normalizedPaymentType,
       quotaValue: quota.value,
-      ...(await resolveBankChoice(quota.companyId, { bankAccountId, bank })),
+      ...bankChoice,
       paymentMethod,
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,
       observations: observations || '',
-      status: 'PENDIENTE'
+      status: 'PENDIENTE',
+    }).catch(async (createError) => {
+      await VerificationToken.updateOne({ _id: verifiedSession._id }, { $set: { isUsed: false } });
+      throw createError;
     });
     console.log('[LOG][PUBLIC_REPORT_PAYMENT] Intento de pago creado exitosamente con ID:', attempt._id);
-
-    // Mark the OTP token as used
-    verifiedSession.isUsed = true;
-    await verifiedSession.save();
 
     // Update client contact info if provided
     try {

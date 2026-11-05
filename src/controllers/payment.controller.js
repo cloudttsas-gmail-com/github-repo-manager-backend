@@ -13,6 +13,7 @@ import { generateSiigoExcel } from '../utils/siigoExport.js';
 import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
+import { claimPaymentRequest } from '../utils/idempotency.js';
 
 const migrateLegacyPayments = async (tenantId, companyId) => {
   try {
@@ -510,9 +511,11 @@ export const rejectPayment = async (req, res, next) => {
  * Admin: Manually register a payment for a quota (Auto-approved)
  */
 export const registerManualPayment = async (req, res, next) => {
+  let releaseRequest = async () => {};
+  let quotasChanged = false;
   try {
     const { tenantId, companyId, role } = req.user;
-    const { quotaId, amount, bank, bankAccountId, observations, paymentDate, fechaPago, paymentMethod, paymentOption } = req.body;
+    const { quotaId, amount, bank, bankAccountId, observations, paymentDate, fechaPago, paymentMethod, paymentOption, requestId } = req.body;
 
     const isAdmin = ['superadmin', 'tenant_admin', 'company_admin', 'administrador'].includes(role);
     if ((bank === 'Cruce de cuentas' || paymentMethod === 'Cruce de cuentas') && !isAdmin) {
@@ -540,6 +543,11 @@ export const registerManualPayment = async (req, res, next) => {
       return next(new AppError('Cuota no encontrada', 404));
     }
 
+    // Validate everything that can fail before any quota changes, and claim the
+    // form's operation id so a double click cannot record the payment twice
+    const bankChoice = await resolveBankChoice(companyId, { bankAccountId, bank: bank || 'Efectivo' });
+    releaseRequest = await claimPaymentRequest(`manual:${companyId}`, requestId);
+
     console.log('[LOG][REGISTER_MANUAL_PAYMENT] Cuota inicial encontrada para registrar pago:', {
       quotaId: quota._id,
       contract: quota.contract,
@@ -558,6 +566,8 @@ export const registerManualPayment = async (req, res, next) => {
 
     const finalPaymentDate = parseBusinessDate(paymentDate || fechaPago);
     console.log('[LOG][REGISTER_MANUAL_PAYMENT] Fecha determinada para registro de pago:', finalPaymentDate);
+    // From here on quotas change: a failure must not free the operation id for a retry
+    quotasChanged = true;
 
     // Generate atomic receipt number for this manual payment
     const manualReceiptNumber = await getNextSequence(companyId, tenantId, 'RECEIPT');
@@ -693,7 +703,7 @@ export const registerManualPayment = async (req, res, next) => {
         amount: paidAmount,
         paymentType: OPTION_TO_TYPE[paymentOption] || (paidAmount >= quotaPendingValue ? 'TOTAL' : 'PARCIAL'),
         quotaValue: quota.value,
-        ...(await resolveBankChoice(companyId, { bankAccountId, bank: bank || 'Efectivo' })),
+        ...bankChoice,
         paymentMethod: paymentMethod || 'Efectivo',
         fechaPago: finalPaymentDate,
         comprobante: captureUrl || undefined,
@@ -740,6 +750,7 @@ export const registerManualPayment = async (req, res, next) => {
       message: 'Pago registrado y aprobado exitosamente',
     });
   } catch (error) {
+    if (!quotasChanged) await releaseRequest();
     console.error('[LOG][REGISTER_MANUAL_PAYMENT] Error crítico:', error);
     next(error);
   }
