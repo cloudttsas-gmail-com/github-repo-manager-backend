@@ -208,6 +208,36 @@ describe('Auth hardening', () => {
       expect((await User.findById(gerenteMembershipId)).role).toBe('gerente');
     });
 
+    it('a gerente can edit their own name but not their role', async () => {
+      const q = `?companyId=${a.companyId}`;
+      const auth = { Authorization: `Bearer ${gerenteToken}` };
+      const name = await request(app).put(`/api/admin-users/update/${gerenteMembershipId}${q}`).set(auth).send({ fullName: 'Gerente Editado' });
+      const role = await request(app).put(`/api/admin-users/update/${gerenteMembershipId}${q}`).set(auth).send({ role: 'tenant_admin' });
+      expect([name.statusCode, role.statusCode]).toEqual([200, 403]);
+    });
+
+    it('nobody assigns a company from another tenant', async () => {
+      const byOwner = await createMember(a.token, a.companyId, {
+        fullName: 'X', email: email('x-cross-owner'), role: 'contador', companyIds: [b.companyId],
+      });
+      const byGerente = await createMember(gerenteToken, a.companyId, {
+        fullName: 'X', email: email('x-cross-gerente'), role: 'contador', companyIds: [b.companyId],
+      });
+      const selfGrant = await request(app).put(`/api/admin-users/update/${gerenteMembershipId}?companyId=${a.companyId}`)
+        .set('Authorization', `Bearer ${gerenteToken}`).send({ companyIds: [b.companyId] });
+      expect([byOwner.statusCode, byGerente.statusCode, selfGrant.statusCode]).toEqual([403, 403, 403]);
+      expect(await UserCompany.countDocuments({ companyId: b.companyId, tenantId: a.tenantId })).toBe(0);
+      expect(await UserAccount.countDocuments({ email: { $in: [email('x-cross-owner'), email('x-cross-gerente')] } })).toBe(0);
+    });
+
+    it('a gerente cannot give a company they do not have', async () => {
+      const other = await Company.create({ tenantId: a.tenantId, name: `Other ${stamp}`, slug: `other-${stamp}` });
+      const res = await createMember(gerenteToken, a.companyId, {
+        fullName: 'X', email: email('x-other-company'), role: 'contador', companyIds: [other._id.toString()],
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
     it('a gerente cannot edit, reset or remove the tenant owner', async () => {
       const auth = { Authorization: `Bearer ${gerenteToken}` };
       const q = `?companyId=${a.companyId}`;

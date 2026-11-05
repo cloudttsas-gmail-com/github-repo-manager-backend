@@ -1,6 +1,8 @@
 import UserAccount from '../models/UserAccount.js';
 import User from '../models/User.js';
 import UserCompany from '../models/UserCompany.js';
+import Company from '../models/Company.js';
+import mongoose from 'mongoose';
 import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AuditLog from '../models/AuditLog.js';
 import { sendEmail } from '../utils/notifications.js';
@@ -127,6 +129,24 @@ export const getSellers = async (req, res, next) => {
 };
 
 /**
+ * Whether every company in `companyIds` may be given to a member by the requester:
+ * it must belong to the requester's tenant and, unless the requester owns the
+ * tenant, be one of the requester's own companies.
+ */
+const canAssignCompanies = async (reqUser, companyIds) => {
+  const ids = [...new Set(companyIds.map(String))];
+  if (ids.length === 0) return true;
+  if (!ids.every((id) => mongoose.isValidObjectId(id))) return false;
+
+  const found = await Company.countDocuments({ _id: { $in: ids }, tenantId: reqUser.tenantId });
+  if (found !== ids.length) return false;
+
+  if (['superadmin', 'tenant_admin'].includes(reqUser.role)) return true;
+  const own = (reqUser.companies || []).map((c) => String(c.id));
+  return ids.every((id) => own.includes(id));
+};
+
+/**
  * Invite / create a new user within the current tenant.
  * If email already has a UserAccount → only create the membership.
  * If not → create UserAccount + User.
@@ -146,6 +166,10 @@ export const createUser = async (req, res, next) => {
 
     if (!canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
+    }
+
+    if (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds))) {
+      return next(new AppError('No puedes asignar esa empresa', 403));
     }
 
     // Check if a membership already exists in this tenant for this email
@@ -230,17 +254,24 @@ export const updateUser = async (req, res, next) => {
       return next(new AppError('User not found in this team', 404));
     }
 
-    if (!canManageMember(req.user.role, membership.role)) {
-      return next(new AppError('No puedes modificar a este usuario', 403));
-    }
-
+    // Members may edit their own name, never their own role or status
     const isSelf = membership._id.toString() === req.user.userId?.toString();
     if (isSelf && ((role && role !== membership.role) || (status && status !== membership.status))) {
       return next(new AppError('No puedes cambiar tu propio rol ni tu estado', 403));
     }
 
+    if (!isSelf && !canManageMember(req.user.role, membership.role)) {
+      return next(new AppError('No puedes modificar a este usuario', 403));
+    }
+
     if (role && role !== membership.role && !canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
+    }
+
+    let { companyIds, companyId } = req.body;
+    if (!companyIds && companyId) companyIds = [companyId];
+    if (companyIds && (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds)))) {
+      return next(new AppError('No puedes asignar esa empresa', 403));
     }
 
     if (role) membership.role = role;
@@ -248,8 +279,6 @@ export const updateUser = async (req, res, next) => {
     await membership.save();
 
     // Handle company assignments if provided
-    let { companyIds, companyId } = req.body;
-    if (!companyIds && companyId) companyIds = [companyId];
     
     if (companyIds && companyIds.length > 0 && membership.role !== 'tenant_admin') {
       // For each companyId, check if assignment already exists
