@@ -11,6 +11,7 @@ import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
 import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
+import { parseBusinessDate } from '../utils/dates.js';
 
 const migrateLegacyPayments = async (tenantId, companyId) => {
   try {
@@ -242,7 +243,7 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
     // Send WhatsApp
     const clientPhone = fullQuota.contract.client.phone;
     if (clientPhone) {
-      const message = `Cordial saludo ${fullQuota.contract.client.name}, su recibo de la cuota #${fullQuota.number} por $${(fullQuota.amountPaid || fullQuota.value).toLocaleString()} de ${company?.name || 'nuestra empresa'}. Ver recibo: ${receiptUrl} | Estado de Cuenta: ${statementUrl}`;
+      const message = `Cordial saludo ${fullQuota.contract.client.name}, su recibo de la cuota #${fullQuota.number} por $${(fullQuota.amountPaid || fullQuota.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })} de ${company?.name || 'nuestra empresa'}. Ver recibo: ${receiptUrl} | Estado de Cuenta: ${statementUrl}`;
       await sendWhatsApp(clientPhone, message);
     }
 
@@ -257,7 +258,7 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
           <p>Te enviamos el recibo oficial de tu pago de la cuota <strong>#${fullQuota.number}</strong> y tu estado de cuenta actualizado.</p>
           
           <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Monto:</strong> $${(fullQuota.amountPaid || fullQuota.value).toLocaleString()}</p>
+            <p style="margin: 0;"><strong>Monto:</strong> $${(fullQuota.amountPaid || fullQuota.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}</p>
             <p style="margin: 5px 0 0 0;"><strong>Concepto:</strong> Pago de cuota - ${fullQuota.contract.lot?.stage || 'Proyecto'}</p>
           </div>
 
@@ -554,7 +555,7 @@ export const registerManualPayment = async (req, res, next) => {
       console.log('[LOG][REGISTER_MANUAL_PAYMENT] Archivo subido exitosamente:', captureUrl);
     }
 
-    const finalPaymentDate = paymentDate || fechaPago || new Date();
+    const finalPaymentDate = parseBusinessDate(paymentDate || fechaPago);
     console.log('[LOG][REGISTER_MANUAL_PAYMENT] Fecha determinada para registro de pago:', finalPaymentDate);
 
     // Generate atomic receipt number for this manual payment
@@ -926,7 +927,7 @@ export const editPayment = async (req, res, next) => {
 
     const finalBank = bank || attempt.banco || 'Efectivo';
     const finalMethod = paymentMethod || attempt.paymentMethod || 'Efectivo';
-    const finalDate = paymentDate ? new Date(paymentDate) : (attempt.fechaPago || new Date());
+    const finalDate = parseBusinessDate(paymentDate, attempt.fechaPago || new Date());
     const finalObservations = observations !== undefined ? observations : attempt.observations;
     const finalReceiptNumber = attempt.receiptNumber || (await getNextSequence(companyId, tenantId, 'RECEIPT'));
 

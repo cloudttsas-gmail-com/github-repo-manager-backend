@@ -116,3 +116,15 @@ describe('Public payment flow and bank scoping', () => {
     expect(statuses).toEqual([403, 403, 403, 403, 403, 404, 404]);
   });
 });
+
+describe('parseBusinessDate', () => {
+  it('keeps date-only values on the same day in Colombia', async () => {
+    const { parseBusinessDate } = await import('../src/utils/dates.js');
+    const d = parseBusinessDate('2026-11-05');
+    expect(d.toLocaleDateString('en-CA', { timeZone: 'America/Bogota' })).toBe('2026-11-05');
+    expect(d.toISOString().slice(0, 10)).toBe('2026-11-05');
+    const fallback = new Date(0);
+    expect(parseBusinessDate('', fallback)).toBe(fallback);
+    expect(parseBusinessDate('not a date', fallback)).toBe(fallback);
+  });
+});

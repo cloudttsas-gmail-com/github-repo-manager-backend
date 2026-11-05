@@ -10,6 +10,7 @@ import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { getNextSequence } from '../models/Counter.js';
 import { generateStatementStream } from '../utils/statement.js';
+import { parseBusinessDate } from '../utils/dates.js';
 
 /**
  * Generate a dynamic PDF receipt for a paid quota (Public endpoint)
@@ -436,7 +437,7 @@ export const reportPayment = async (req, res, next) => {
       console.log('[LOG][PUBLIC_REPORT_PAYMENT] Archivo subido exitosamente:', captureUrl);
     }
 
-    const targetDate = paymentDate || fechaPago || new Date();
+    const targetDate = parseBusinessDate(paymentDate || fechaPago);
     console.log('[LOG][PUBLIC_REPORT_PAYMENT] Fecha determinada para el pago:', targetDate);
 
     const paymentAmount = parseFloat(amount) || quota.value;

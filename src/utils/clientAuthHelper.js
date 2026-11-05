@@ -8,6 +8,12 @@ import { sendEmail, sendWhatsApp } from './notifications.js';
  * Registers a portal user account for a client, generates a validation token,
  * and sends welcome notifications with access credentials.
  */
+const PASSWORD_HINTS = {
+  document: 'Tu contraseña inicial es tu número de documento. Al entrar te enviaremos un código a tu celular para confirmar que eres tú.',
+  given: 'Usa la contraseña que te entregó tu asesor.',
+  existing: 'Usa la contraseña con la que ya entras al portal.',
+};
+
 export const registerPortalUserForClient = async (client, tenantId, companyId, passwordInput = null, quotas = null, contract = null) => {
   try {
     // 1. Generate validation token for the client if they don't have one
@@ -39,6 +45,8 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
     // 3. Create or find UserAccount
     let account = null;
     let generatedPin = null;
+    // How the buyer signs in the first time, for the welcome message
+    let passwordSource = 'existing';
 
     if (client.idNumber) {
       account = await UserAccount.findOne({ documentoIdentidad: client.idNumber });
@@ -53,6 +61,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
       if (!passwordInput && !client.idNumber) {
         generatedPin = defaultPassword;
       }
+      passwordSource = passwordInput ? 'given' : client.idNumber ? 'document' : 'pin';
       
       const emailValue = client.email || `${client.idNumber || Math.floor(100000 + Math.random() * 900000)}@portal.com`;
 
@@ -62,7 +71,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
         fullName: client.name,
         documentoIdentidad: client.idNumber,
       });
-      console.log(`[CLIENT_AUTH_HELPER] Created UserAccount for: ${emailValue} with default password/document: ${client.idNumber || generatedPin}`);
+      console.log(`[CLIENT_AUTH_HELPER] Created UserAccount for: ${emailValue}`);
     } else {
       console.log(`[CLIENT_AUTH_HELPER] Found existing UserAccount for: ${account.email}`);
       if (!account.documentoIdentidad && client.idNumber) {
@@ -143,7 +152,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
           <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; margin: 20px 0;">
             <h4 style="margin: 0 0 10px 0; color: #0f172a;">Tus Datos de Acceso al Portal:</h4>
             <p style="margin: 5px 0;"><strong>Usuario:</strong> ${client.email}</p>
-            ${generatedPin ? `<p style="margin: 5px 0;"><strong>PIN / Contraseña Temporal:</strong> <span style="font-family: monospace; font-size: 16px; font-weight: bold; background: #e2e8f0; padding: 2px 6px; rounded: 4px;">${generatedPin}</span></p>` : '<p style="margin: 5px 0; font-size: 12px; color: #64748b;">(Usa la contraseña que definiste al registrarte)</p>'}
+            ${generatedPin ? `<p style="margin: 5px 0;"><strong>PIN / Contraseña Temporal:</strong> <span style="font-family: monospace; font-size: 16px; font-weight: bold; background: #e2e8f0; padding: 2px 6px; rounded: 4px;">${generatedPin}</span></p>` : `<p style="margin: 5px 0; font-size: 12px; color: #64748b;">${PASSWORD_HINTS[passwordSource] || ''}</p>`}
           </div>
 
           <p style="font-weight: bold; color: #0f172a; margin-top: 25px;">IMPORTANTE: Validación de tus Datos de Contacto</p>
@@ -214,7 +223,13 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId) 
       `;
     }).join('');
 
-    const subject = `Tu Plan de Pagos - ${companyName}`;
+    let lotNumber = contract?.lot?.lotNumber;
+    if (!lotNumber && contract?.lot) {
+      const Lot = (await import('../models/Lot.js')).default;
+      lotNumber = (await Lot.findById(contract.lot).select('lotNumber'))?.lotNumber;
+    }
+    const lotLabel = lotNumber ? ` - Lote ${lotNumber}` : '';
+    const subject = `Tu Plan de Pagos${lotLabel} - ${companyName}`;
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
         <h2 style="color: #0284c7; text-align: center;">Tu Plan de Pagos - ${companyName}</h2>

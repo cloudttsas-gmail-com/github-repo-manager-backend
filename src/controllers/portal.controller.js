@@ -10,6 +10,7 @@ import AppError from '../utils/AppError.js';
 import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
+import { parseBusinessDate } from '../utils/dates.js';
 
 /**
  * Get dashboard home data for the client portal
@@ -352,7 +353,7 @@ export const reportPortalPayment = async (req, res, next) => {
       console.log('[LOG][PORTAL_REPORT_PAYMENT] Archivo subido exitosamente:', captureUrl);
     }
 
-    const targetDate = fechaPago ? new Date(fechaPago) : new Date();
+    const targetDate = parseBusinessDate(fechaPago);
     const paymentAmount = parseFloat(amount);
 
     // Tipo de pago seleccionado por el cliente: TOTAL / MINIMO / OTRO (o PARCIAL si no llega)
