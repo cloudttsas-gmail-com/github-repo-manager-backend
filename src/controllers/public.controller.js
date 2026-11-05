@@ -293,7 +293,8 @@ export const getStatementPDF = async (req, res, next) => {
 };
 
 /**
- * Get client information and their lot contracts with pending quotas
+ * First step of the public payment flow: tells where the code can be sent.
+ * Only masked contact data is returned; contracts and quotas need a verified code.
  */
 export const getClientInfo = async (req, res, next) => {
   try {
@@ -304,41 +305,14 @@ export const getClientInfo = async (req, res, next) => {
       return next(new AppError('Empresa no encontrada', 404));
     }
 
-    const client = await Client.findOne({ 
-      idNumber, 
+    const client = await Client.findOne({
+      idNumber: String(idNumber),
       companyId: company._id,
-    });
-    
+    }).select('email phone');
+
     if (!client) {
       return next(new AppError('Cliente no encontrado en esta empresa', 404));
     }
-
-    const contracts = await Contract.find({ 
-      client: client._id,
-      companyId: company._id,
-    }).populate('lot').lean();
-
-    // OPTIMIZATION: Get all quotas for all contracts in ONE query
-    const contractIds = contracts.map(c => c._id);
-    const allQuotas = await Quota.find({ contract: { $in: contractIds } })
-      .sort({ type: 1, number: 1 })
-      .lean();
-
-    const contractsWithQuotas = contracts.map((contract) => {
-      const contractQuotas = allQuotas.filter(q => q.contract.toString() === contract._id.toString());
-      
-      return {
-        ...contract,
-        quotas: contractQuotas.map((q) => ({
-          _id: q._id,
-          number: q.number,
-          type: q.type,
-          value: q.value,
-          dueDate: q.dueDate,
-          status: q.status,
-        })),
-      };
-    });
 
     const maskEmail = (email) => {
       if (!email || !email.includes('@')) return '';
@@ -360,12 +334,9 @@ export const getClientInfo = async (req, res, next) => {
       success: true,
       data: {
         client: {
-          name: client.name,
-          idNumber: client.idNumber,
           email: maskEmail(client.email),
           phone: maskPhone(client.phone),
         },
-        contracts: contractsWithQuotas,
       },
     });
   } catch (error) {

@@ -245,7 +245,8 @@ export const login = async (req, res, next) => {
         client._id,
         'phone', // Satisfies VerificationToken schema validation enum
         client.phone,
-        companyName
+        companyName,
+        'login'
       );
 
       return res.json({

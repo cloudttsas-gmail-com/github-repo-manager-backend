@@ -1,0 +1,101 @@
+import request from 'supertest';
+import app from '../src/app.js';
+import UserAccount from '../src/models/UserAccount.js';
+import User from '../src/models/User.js';
+import UserCompany from '../src/models/UserCompany.js';
+import Tenant from '../src/models/Tenant.js';
+import Company from '../src/models/Company.js';
+import Client from '../src/models/Client.js';
+import Bank from '../src/models/Bank.js';
+import VerificationToken from '../src/models/VerificationToken.js';
+
+const stamp = Date.now();
+const password = 'Password123!';
+
+describe('Public payment flow and bank scoping', () => {
+  let a;
+  let b;
+  let slug;
+
+  const register = async (name) => {
+    const res = await request(app).post('/api/auth/register').send({
+      name: `Owner ${name}`, fullName: `Owner ${name}`, email: `owner-${name}.${stamp}@public.test`,
+      password, confirmPassword: password,
+      tenantName: `Tenant ${name} ${stamp}`, companyName: `Company ${name} ${stamp}`,
+    });
+    return {
+      token: res.body.data.accessToken,
+      companyId: res.body.data.company._id,
+      tenantId: res.body.data.company.tenantId,
+    };
+  };
+
+  beforeAll(async () => {
+    a = await register('a');
+    b = await register('b');
+    const company = await Company.findById(a.companyId);
+    slug = company.slug || `public-${stamp}`;
+    if (!company.slug) await Company.updateOne({ _id: company._id }, { slug });
+    await Client.create({
+      tenantId: a.tenantId, companyId: a.companyId, name: 'Buyer Secret Name',
+      idNumber: `P${stamp}`, phone: '3001234567', email: `buyer.${stamp}@public.test`,
+    });
+  });
+
+  afterAll(async () => {
+    const tenantIds = [a?.tenantId, b?.tenantId].filter(Boolean);
+    await VerificationToken.deleteMany({ tenantId: { $in: tenantIds } });
+    await Bank.deleteMany({ socialDenomination: /PUBLIC TEST/ });
+    await Client.deleteMany({ tenantId: { $in: tenantIds } });
+    await UserCompany.deleteMany({ tenantId: { $in: tenantIds } });
+    await User.deleteMany({ tenantId: { $in: tenantIds } });
+    await Company.deleteMany({ tenantId: { $in: tenantIds } });
+    await Tenant.deleteMany({ _id: { $in: tenantIds } });
+    await UserAccount.deleteMany({ email: /public\.test$/ });
+  });
+
+  it('the lookup by id number returns only masked contact data', async () => {
+    const res = await request(app).get(`/api/public/${slug}/client/P${stamp}`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.contracts).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toMatch(/Buyer Secret Name|3001234567|buyer\./);
+    expect(res.body.data.client.phone).toMatch(/\*+4567$/);
+  });
+
+  it('a client gets at most three codes in ten minutes', async () => {
+    const send = () => request(app).post(`/api/public/${slug}/verification/send-code`)
+      .send({ idNumber: `P${stamp}`, type: 'email' });
+    const statuses = [];
+    for (let i = 0; i < 4; i++) statuses.push((await send()).statusCode);
+    expect(statuses).toEqual([200, 200, 200, 429]);
+  });
+
+  it('bulk bank loads stay in the requester company', async () => {
+    const res = await request(app).post(`/api/banks/bulk?companyId=${a.companyId}`)
+      .set('Authorization', `Bearer ${a.token}`)
+      .send({ banks: [
+        { type: '1', code: '901', socialDenomination: 'PUBLIC TEST GLOBAL', acronym: 'PTG', tenantId: null, companyId: null },
+        { type: '1', code: '902', socialDenomination: 'PUBLIC TEST OTHER', acronym: 'PTO', tenantId: b.tenantId, companyId: b.companyId },
+      ] });
+    expect(res.statusCode).toBe(201);
+    const created = await Bank.find({ socialDenomination: /PUBLIC TEST/ });
+    expect(created).toHaveLength(2);
+    created.forEach((bank) => {
+      expect(bank.tenantId.toString()).toBe(a.tenantId.toString());
+      expect(bank.companyId.toString()).toBe(a.companyId.toString());
+    });
+  });
+
+  it('updating a bank cannot move it to another company', async () => {
+    const bank = await Bank.findOne({ socialDenomination: 'PUBLIC TEST GLOBAL' });
+    const url = `/api/banks/${bank._id}?companyId=${a.companyId}`;
+    const auth = { Authorization: `Bearer ${a.token}` };
+    const foreignCompany = await request(app).put(url).set(auth).send({ acronym: 'X', companyId: b.companyId });
+    const foreignTenant = await request(app).put(url).set(auth).send({ acronym: 'PTG2', tenantId: b.tenantId });
+    expect([foreignCompany.statusCode, foreignTenant.statusCode]).toEqual([404, 200]);
+    const after = await Bank.findById(bank._id);
+    expect(after.acronym).toBe('PTG2');
+    expect(after.tenantId.toString()).toBe(a.tenantId.toString());
+    expect(after.companyId.toString()).toBe(a.companyId.toString());
+  });
+});

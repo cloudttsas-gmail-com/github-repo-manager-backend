@@ -151,7 +151,7 @@ export const createBank = async (req, res, next) => {
 export const bulkCreateBanks = async (req, res, next) => {
   try {
     const { banks } = req.body;
-    const { tenantId, companyId } = req.user || {};
+    const { tenantId, companyId, role } = req.user || {};
 
     if (!Array.isArray(banks)) {
       return res.status(400).json({
@@ -160,12 +160,11 @@ export const bulkCreateBanks = async (req, res, next) => {
       });
     }
 
-    // Inject tenant/company context if available
-    const scopedBanks = banks.map(bank => ({
-      ...bank,
-      tenantId: bank.tenantId || tenantId,
-      companyId: bank.companyId || companyId
-    }));
+    // Banks always belong to the requester's company; only a superadmin may load
+    // banks for another scope (or global ones, with no tenant).
+    const scopedBanks = banks.map((bank) => (role === 'superadmin'
+      ? bank
+      : { ...bank, tenantId, companyId, disabledByCompanies: [] }));
 
     const result = await Bank.insertMany(scopedBanks, { ordered: false });
 
@@ -230,8 +229,12 @@ export const updateBank = async (req, res, next) => {
       return res.status(403).json({ success: false, message: 'No puedes gestionar bancos del sistema' });
     }
 
-    // Otherwise, normal update of company specific bank
-    const updatedBank = await Bank.findByIdAndUpdate(bankId, req.body, {
+    // Otherwise, normal update of company specific bank; its scope cannot be moved
+    const changes = { ...req.body };
+    delete changes.tenantId;
+    delete changes.companyId;
+    delete changes.disabledByCompanies;
+    const updatedBank = await Bank.findByIdAndUpdate(bankId, role === 'superadmin' ? req.body : changes, {
       new: true,
       runValidators: true,
     });
