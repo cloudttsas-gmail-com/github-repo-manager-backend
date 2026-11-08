@@ -127,4 +127,13 @@ describe('Integration Test - Banks API', () => {
     const dbBank = await Bank.findById(testBankId);
     expect(dbBank).toBeNull();
   });
+
+  it('the public bank list follows the page slug even with a panel session in the browser', async () => {
+    const company = await Company.findById(companyId);
+    const res = await request(app)
+      .get(`/api/banks?companySlug=${company.slug}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.statusCode).toBe(200);
+    expect(Array.isArray(res.body.data.banks)).toBe(true);
+  });
 });

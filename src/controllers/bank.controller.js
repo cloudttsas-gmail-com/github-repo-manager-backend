@@ -25,7 +25,8 @@ export const getBanks = async (req, res, next) => {
         const decoded = verifyAccessToken(token);
         tenantId = decoded.tenantId;
         if (!companyId && decoded.companies && decoded.companies.length > 0) {
-          companyId = decoded.companies[0].companyId || decoded.companies[0];
+          const first = decoded.companies[0];
+          companyId = first?.companyId || first?._id || first;
         }
         req.user = decoded;
       } catch (err) {
@@ -33,15 +34,17 @@ export const getBanks = async (req, res, next) => {
       }
     }
 
-    // Support public requests or requests without full middleware context
-    if (!tenantId && (queryCompanyId || companySlug)) {
+    // Support public requests or requests without full middleware context. The public
+    // payment page names its company by slug: it wins over a panel session open in the
+    // same browser, which used to make this list fail
+    if (companySlug || (!tenantId && queryCompanyId)) {
       const { default: Company } = await import('../models/Company.js');
       let company;
       
-      if (queryCompanyId) {
-        company = await Company.findById(queryCompanyId).select('tenantId _id');
-      } else if (companySlug) {
+      if (companySlug) {
         company = await Company.findOne({ slug: companySlug }).select('tenantId _id');
+      } else {
+        company = await Company.findById(queryCompanyId).select('tenantId _id');
       }
 
       if (company) {
