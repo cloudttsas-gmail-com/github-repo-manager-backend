@@ -921,7 +921,7 @@ export const reserveLot = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Tipo de reserva inválido' });
     }
 
-    const lot = await Lot.findById(id);
+    const lot = await Lot.findOne({ _id: id, tenantId, companyId });
     if (!lot) return res.status(404).json({ success: false, message: 'Lote no encontrado' });
 
     if (lot.isDeleted) {
@@ -1013,10 +1013,17 @@ export const reserveLot = async (req, res, next) => {
 export const releaseLot = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const { tenantId, companyId } = req.user;
     const { reason, observations } = req.body;
 
-    const lot = await Lot.findById(id);
+    const lot = await Lot.findOne({ _id: id, tenantId, companyId });
     if (!lot) return res.status(404).json({ success: false, message: 'Lote no encontrado' });
+
+    // Only a reservation is released: a sold lot has a contract and payments, and
+    // releasing it allowed selling it again
+    if (!['apartado', 'separado'].includes(lot.status)) {
+      return res.status(400).json({ success: false, message: `Solo se puede liberar un lote apartado o separado; este está ${lot.status}` });
+    }
 
     const previousStatus = lot.status;
     lot.status = 'disponible';
@@ -1074,7 +1081,7 @@ export const assignLotSeller = async (req, res, next) => {
     }
 
     const User = (await import('../models/User.js')).default;
-    const seller = await User.findById(sellerId).populate('accountId');
+    const seller = await User.findOne({ _id: sellerId, tenantId }).populate('accountId');
     if (!seller) return res.status(400).json({ success: false, message: 'El asesor seleccionado no existe' });
 
     contract.sellerId = seller._id;
