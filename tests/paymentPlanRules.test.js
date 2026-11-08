@@ -88,6 +88,23 @@ describe('Payment plan rules (pure date math)', () => {
     expect(iso(ordinary[0].dueDate)).toBe('2027-01-05');
   });
 
+  it('the plan always adds up to the sale value: bad separation or no ordinary quotas are rejected', () => {
+    const base = { saleDate: SALE, totalValue: 30000000, initialQuotaPercentage: 10, installmentsCount: 12, paymentDay: 5, policy: {} };
+    expect(() => buildSalePlan({ ...base, separationAmount: 5000000 })).toThrow('La separación no puede ser mayor que la cuota inicial');
+    expect(() => buildSalePlan({ ...base, separationAmount: -1000000 })).toThrow('La separación no puede ser negativa');
+    expect(() => buildSalePlan({ ...base, installmentsCount: 0 })).toThrow('número de cuotas ordinarias');
+    const sum = (plan) => plan.quotas.reduce((s, q) => s + q.value, 0);
+    expect(sum(buildSalePlan({ ...base, separationAmount: 3000000 }))).toBe(30000000);
+    expect(sum(buildSalePlan({ ...base, initialQuotaPercentage: 100, installmentsCount: 0 }))).toBe(30000000);
+    // quotas are rounded to thousands (existing rule), so the plan adds up to the rounded value
+    expect(sum(buildSalePlan({ ...base, totalValue: 10000400, installmentsCount: 7 }))).toBe(10000000);
+    expect(sum(buildSalePlan({ ...base, totalValue: 10000600, initialQuotaPercentage: 15, installmentsCount: 7 }))).toBe(10001000);
+  });
+
+  it('an empty list of payment days is rejected', () => {
+    expect(() => rules.validatePaymentPlanPolicy({ allowedPaymentDays: [] })).toThrow('al menos un día de pago');
+  });
+
   it('early start only when the project allows it', () => {
     expect(() => buildSalePlan({
       saleDate: SALE, totalValue: 1000000, initialQuotaPercentage: 30, installmentsCount: 2, paymentDay: 30, earlyStart: true, policy: {},

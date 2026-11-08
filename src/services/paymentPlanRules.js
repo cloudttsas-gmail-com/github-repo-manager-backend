@@ -82,6 +82,9 @@ const intInRange = (value, min, max, message) => {
 
 /** Validates a policy sent from Configuración and returns it clean (only known fields). */
 export const validatePaymentPlanPolicy = (input = {}) => {
+  if (Array.isArray(input.allowedPaymentDays) && input.allowedPaymentDays.length === 0) {
+    throw new AppError('Debe haber al menos un día de pago permitido', 400);
+  }
   const current = resolvePaymentPlanPolicy(input);
   const policy = {};
   policy.initialDeadlineDays = intInRange(current.initialDeadlineDays, 1, 365,
@@ -214,8 +217,15 @@ export const buildSalePlan = ({
   const total = Number(totalValue) || 0;
   const rawInitialAmountTotal = roundMoney(total * ((Number(initialQuotaPercentage) || 0) / 100));
   const separation = parseFloat(separationAmount) || 0;
+  if (separation < 0) throw new AppError('La separación no puede ser negativa', 400);
+  if (separation > rawInitialAmountTotal) {
+    throw new AppError('La separación no puede ser mayor que la cuota inicial', 400);
+  }
   const initialAmount = Math.max(0, rawInitialAmountTotal - separation);
   const residualAmount = roundMoney(total - rawInitialAmountTotal);
+  if (residualAmount > 0 && count <= 0) {
+    throw new AppError('Indica el número de cuotas ordinarias para el saldo después de la cuota inicial', 400);
+  }
   const installmentValue = count > 0 ? roundMoney(residualAmount / count) : 0;
 
   const sale = toCalendarDate(saleDate);
@@ -249,6 +259,12 @@ export const buildSalePlan = ({
   ordinaryDueDates({ first: fromCalendarDate(first), paymentDay: day, count }).forEach((date, i) => {
     if (ordinaryValues[i] > 0) quotas.push({ number: i + 1, type: 'normal', value: ordinaryValues[i], dueDate: fromCalendarDate(date), status: 'pendiente' });
   });
+
+  // The plan must add up to the sale value: no money can be lost or invented
+  const planTotal = roundMoney(quotas.reduce((sum, q) => sum + q.value, 0));
+  if (Math.abs(planTotal - roundMoney(total)) > 1) {
+    throw new AppError('El plan de pagos no suma el valor de la venta. Revisa la cuota inicial, la separación y las cuotas', 400);
+  }
 
   return {
     paymentDay: day,
