@@ -34,6 +34,12 @@ const verificationTokenSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  // What the code was asked for; the message names it (payment, login or statement)
+  purpose: {
+    type: String,
+    enum: ['payment', 'login', 'statement'],
+    default: 'payment',
+  },
   isUsed: {
     type: Boolean,
     default: false,

@@ -33,10 +33,16 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
     code,
     type,
     destination,
+    purpose,
     expiresAt,
   });
 
-  const action = purpose === 'login' ? 'entrar a tu portal' : 'reportar tu pago';
+  const ACTIONS = {
+    login: ['entrar a tu portal', 'entrar a tu portal de cliente'],
+    statement: ['consultar tu estado de cuenta', 'consultar tu estado de cuenta'],
+    payment: ['reportar tu pago', 'reportar el pago de tu inmueble'],
+  };
+  const [action, emailAction] = ACTIONS[purpose] || ACTIONS.payment;
   const message = `Tu código de seguridad de ${companyName} para ${action} es: ${code}. Es válido por 15 minutos. No lo compartas con nadie.`;
 
   let result;
@@ -46,7 +52,7 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
       <div style="font-family: Arial, sans-serif; color: #333; max-width: 500px; margin: 0 auto; border: 1px solid #eee; padding: 20px; border-radius: 8px;">
         <h3 style="color: #0284c7; text-align: center;">Código de Seguridad</h3>
         <p>Hola,</p>
-        <p>Pediste un código para ${purpose === 'login' ? 'entrar a tu portal de cliente' : 'reportar el pago de tu inmueble'}. Usa este código de verificación:</p>
+        <p>Pediste un código para ${emailAction}. Usa este código de verificación:</p>
         <div style="text-align: center; margin: 25px 0;">
           <span style="font-family: monospace; font-size: 28px; font-weight: bold; background: #f1f5f9; padding: 10px 20px; border-radius: 6px; letter-spacing: 4px; border: 1px solid #cbd5e1;">${code}</span>
         </div>

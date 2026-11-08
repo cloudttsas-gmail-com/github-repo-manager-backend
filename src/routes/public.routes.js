@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import { getClientInfo, reportPayment, getReceiptPDF, getCompanyAccountsPublic, getStatementPDF } from '../controllers/public.controller.js';
+import { getPublicStatementExcel, getPublicStatement, sendPublicStatementEmail } from '../controllers/statement.controller.js';
 
 const router = express.Router();
 
@@ -28,7 +29,12 @@ router.post('/report-payment', upload.single('capture'), reportPayment);
 // Dynamic dynamic receipt generation
 router.get('/receipt/attempt/:attemptId', getReceiptPDF);
 router.get('/receipt/:quotaId', getReceiptPDF);
+router.get('/statement/excel/:contractId', getPublicStatementExcel);
 router.get('/statement/:contractId', getStatementPDF);
+
+// Account statement after a verified code (cédula → code → summary)
+router.post('/:companySlug/statement', getPublicStatement);
+router.post('/:companySlug/statement/send-email', sendPublicStatementEmail);
 
 // Public validation and OTP endpoints
 router.post('/:companySlug/verification/send-code', async (req, res, next) => {

@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Lot from '../models/Lot.js';
 import Payment from '../models/Payment.js';
 import Client from '../models/Client.js';
@@ -10,6 +11,8 @@ import AppError from '../utils/AppError.js';
 import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
+import { loadStatement, toStatementPdfData, buildStatementSummary } from '../services/statementSummary.service.js';
+import { recordDelivery } from './statement.controller.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
@@ -40,40 +43,16 @@ export const getPortalHome = async (req, res, next) => {
 
     const formattedContracts = await Promise.all(contracts.map(async (c) => {
       const quotas = await Quota.find({ contract: c._id, tenantId });
-      
-      const cuotasPagadas = quotas.filter(q => q.status === 'pagado').length;
-      const cuotasPendientes = quotas.filter(q => q.status !== 'pagado').length;
-      
-      const totalPagado = quotas
-        .filter(q => q.status === 'pagado')
-        .reduce((sum, q) => sum + (q.amountPaid || q.value || 0), 0);
-        
-      const totalPendiente = quotas
-        .filter(q => q.status !== 'pagado')
-        .reduce((sum, q) => sum + (q.value || 0), 0);
+      const summary = buildStatementSummary(c, quotas, { apiUrl: process.env.API_URL || '' });
 
-      const totalValue = c.totalValue || 0;
-      const porcentajePagado = totalValue > 0 ? Math.round((totalPagado / totalValue) * 100) : 0;
-
-      // Oldest unpaid quota (dias de mora)
-      const today = new Date();
-      const unpaidQuotas = quotas
-        .filter(q => q.status !== 'pagado' && q.dueDate)
-        .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-
-      let proximoVencimiento = null;
-      let diasMora = 0;
-
-      if (unpaidQuotas.length > 0) {
-        proximoVencimiento = unpaidQuotas[0].dueDate;
-        
-        // Check oldest overdue quota
-        const oldestOverdue = unpaidQuotas[0];
-        if (new Date(oldestOverdue.dueDate) < today) {
-          const diffTime = Math.abs(today - new Date(oldestOverdue.dueDate));
-          diasMora = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        }
-      }
+      const totalValue = summary.totalValue;
+      const cuotasPagadas = summary.paidQuotasCount;
+      const cuotasPendientes = summary.quotasCount - summary.paidQuotasCount;
+      const totalPagado = summary.totalPaid;
+      const totalPendiente = summary.balance;
+      const porcentajePagado = summary.percentPaid;
+      const proximoVencimiento = summary.nextQuota?.dueDate || null;
+      const diasMora = summary.daysOverdue;
 
       return {
         id: c._id,
@@ -98,6 +77,9 @@ export const getPortalHome = async (req, res, next) => {
         porcentajePagado,
         proximoVencimiento,
         diasMora,
+        cuotasEnMora: summary.overdueCount,
+        valorEnMora: summary.overdueAmount,
+        proximaCuota: summary.nextQuota,
         status: c.status || 'ACTIVO'
       };
     }));
@@ -195,6 +177,9 @@ export const getPortalSummary = async (req, res, next) => {
       companyEmail = lots[0].companyId?.email;
     }
 
+    const contractQuotas = await Quota.find({ contract: { $in: contracts.map((c) => c._id) }, tenantId });
+    const clientContact = await Client.findOne({ _id: clientId, tenantId }).select('email');
+
     const contractsData = contracts.map(c => {
       const lotNumber = c.lot?.lotNumber;
       const stageName = c.lot?.stage;
@@ -202,10 +187,17 @@ export const getPortalSummary = async (req, res, next) => {
       const lotInfo = lotNumber 
         ? `Etapa: ${stageName || '-'} - Mz: ${manzana || '-'} - Lote: ${lotNumber}`
         : 'N/A';
+      const { quotas: _quotas, ...statement } = buildStatementSummary(
+        c,
+        contractQuotas.filter((q) => String(q.contract) === String(c._id)),
+        { apiUrl: process.env.API_URL || `${req.protocol}://${req.get('host')}` },
+      );
       return {
         id: c._id,
         lotInfo,
-        projectName: c.companyId?.name || c.lot?.companyId?.name || ''
+        projectName: c.companyId?.name || c.lot?.companyId?.name || '',
+        hasEmail: !!clientContact?.email,
+        statement,
       };
     });
 
@@ -550,35 +542,20 @@ export const getPortalContractDetail = async (req, res, next) => {
 
     const quotas = await Quota.find({ contract: contract._id, tenantId }).sort({ type: 1, number: 1 });
 
-    const initialQuotas = quotas.filter(q => q.type === 'inicial');
-    const normalQuotas = quotas.filter(q => q.type === 'normal');
+    const summary = buildStatementSummary(contract, quotas, { apiUrl: process.env.API_URL || '' });
+    const totalPagado = summary.totalPaid;
+    const PORTAL_STATUS = { pagada: 'PAGADA', mora: 'VENCIDA', abonada: 'PENDIENTE', pendiente: 'PENDIENTE' };
 
-    const paidInitial = initialQuotas.filter(q => q.status === 'pagado');
-    const paidNormal = normalQuotas.filter(q => q.status === 'pagado');
-
-    const totalPagadoFromQuotas = quotas
-      .filter(q => q.status === 'pagado')
-      .reduce((sum, q) => sum + (q.amountPaid || q.value || 0), 0);
-
-    const totalRecaudadoSiigo = (contract.recaudadoSiigo2024 || 0) + (contract.recaudadoSiigo2025 || 0);
-    const totalPagado = Math.max(totalPagadoFromQuotas, totalRecaudadoSiigo);
-
-    const planPagos = quotas.map(q => {
-      let statusStr = 'PENDIENTE';
-      if (q.status === 'pagado') {
-        statusStr = 'PAGADA';
-      } else if (q.status === 'mora' || (q.status === 'pendiente' && q.dueDate && new Date(q.dueDate) < new Date())) {
-        statusStr = 'VENCIDA';
-      }
-      return {
-        numero: q.number,
-        fechaVencimiento: q.dueDate,
-        monto: q.value,
-        status: statusStr,
-        fechaPago: q.paymentDate || q.updatedAt,
-        observaciones: q.paymentObservations
-      };
-    });
+    const planPagos = summary.quotas.map((q) => ({
+      numero: q.number,
+      fechaVencimiento: q.dueDate,
+      monto: q.value,
+      pagado: q.paid,
+      pendiente: q.pending,
+      status: PORTAL_STATUS[q.state],
+      fechaPago: q.paymentDate,
+      observaciones: quotas.find((orig) => String(orig._id) === q.id)?.paymentObservations,
+    }));
 
     const data = {
       id: contract._id,
@@ -597,8 +574,12 @@ export const getPortalContractDetail = async (req, res, next) => {
       valorCuota: contract.installmentValue || 0,
       diaPago: contract.paymentDay || 1,
       totalCuotas: quotas.length,
-      cuotasPagadas: quotas.filter(q => q.status === 'pagado').length,
-      porcentajePagado: contract.totalValue > 0 ? Math.round((totalPagado / contract.totalValue) * 100) : 0,
+      cuotasPagadas: summary.paidQuotasCount,
+      porcentajePagado: summary.percentPaid,
+      saldo: summary.balance,
+      cuotasEnMora: summary.overdueCount,
+      valorEnMora: summary.overdueAmount,
+      diasMora: summary.daysOverdue,
       status: contract.status || 'ACTIVO',
       planPagos
     };
@@ -624,74 +605,16 @@ export const getPortalStatementPDF = async (req, res, next) => {
       return next(new AppError('No client associated with this account', 400));
     }
 
-    const contract = await Contract.findOne({ _id: contractId, client: clientId, tenantId })
-      .populate('client')
-      .populate('lot');
+    const loaded = mongoose.isValidObjectId(contractId)
+      ? await loadStatement({ _id: contractId, client: clientId, tenantId })
+      : null;
 
-    if (!contract) {
+    if (!loaded) {
       return next(new AppError('Contrato no encontrado o no pertenece a este cliente', 404));
     }
 
-    const company = await Company.findById(contract.companyId);
-
-    // Fetch all quotas for the contract sorted by type then number
-    const quotas = await Quota.find({ contract: contractId, tenantId })
-      .sort({ type: 1, number: 1 });
-
-    // Calculate aggregated metrics
-    const totalValue = contract.totalValue || 0;
-    const totalPaid = quotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalPending = Math.max(0, totalValue - totalPaid);
-    const averageRecaudo = totalValue > 0 ? Math.round((totalPaid / totalValue) * 100) : 0;
-
-    // Breakdown metrics
-    const initialQuotas = quotas.filter(q => q.type === 'inicial');
-    const normalQuotas = quotas.filter(q => q.type === 'normal');
-
-    const valorTotalInicial = initialQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-    const valorPagadoInicial = initialQuotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalCuotasIniciales = initialQuotas.length;
-    const cuotasInicialesPagadas = initialQuotas.filter(q => q.status === 'pagado').length;
-
-    const valorTotalCuotas = normalQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-    const valorPagadoCuotas = normalQuotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalCuotasNormales = normalQuotas.length;
-    const cuotasNormalesPagadas = normalQuotas.filter(q => q.status === 'pagado').length;
-
-    const lotInfo = contract.lot 
-      ? `Etapa: ${contract.lot.stage || '-'} - Manzana: ${contract.lot.manzana || '-'} - Lote: ${contract.lot.lotNumber || '-'}${contract.lot.nomenclature ? ` (${contract.lot.nomenclature})` : ''}`
-      : 'N/A';
-
-    const statementData = {
-      contractId: contract._id,
-      clientName: contract.client?.name || 'N/A',
-      clientId: contract.client?.idNumber || 'N/A',
-      clientPhone: contract.client?.phone || '',
-      clientEmail: contract.client?.email || '',
-      projectName: contract.negotiation || 'Proyecto sin nombre',
-      lotInfo,
-      companyName: company?.name || '',
-      companyNit: company?.nit || '',
-      companyAddress: company?.address || '',
-      companyPhone: company?.phone || '',
-      companyLogo: company?.projectLogo || company?.logo || '',
-      // Financial numbers
-      totalValue,
-      totalPaid,
-      totalPending,
-      averageRecaudo,
-      // Breakdown
-      valorTotalInicial,
-      valorPagadoInicial,
-      totalCuotasIniciales,
-      cuotasInicialesPagadas,
-      valorTotalCuotas,
-      valorPagadoCuotas,
-      totalCuotasNormales,
-      cuotasNormalesPagadas,
-      // Detailed list of quotas
-      quotas,
-    };
+    const statementData = toStatementPdfData(loaded);
+    await recordDelivery({ loaded, channel: 'pdf', source: 'portal', req });
 
     await generateStatementStream(statementData, res);
   } catch (error) {

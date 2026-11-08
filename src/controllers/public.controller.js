@@ -10,6 +10,7 @@ import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { getNextSequence } from '../models/Counter.js';
 import { generateStatementStream } from '../utils/statement.js';
+import { loadStatement, toStatementPdfData } from '../services/statementSummary.service.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
 
@@ -228,77 +229,13 @@ export const getStatementPDF = async (req, res, next) => {
       return next(new AppError('Enlace no válido. Pide a tu inmobiliaria que te reenvíe el estado de cuenta.', 403));
     }
 
-    let { contractId } = req.params;
-    contractId = contractId.replace(/[^a-fA-F0-9]/g, '');
-
-    const contract = await Contract.findById(contractId)
-      .populate('client')
-      .populate('lot');
-
-    if (!contract) {
+    const contractId = req.params.contractId.replace(/[^a-fA-F0-9]/g, '');
+    const loaded = contractId.length === 24 ? await loadStatement({ _id: contractId }) : null;
+    if (!loaded) {
       return next(new AppError('Contrato no encontrado', 404));
     }
 
-    const company = await Company.findById(contract.companyId);
-
-    // Fetch all quotas for the contract sorted by type then number
-    const quotas = await Quota.find({ contract: contractId })
-      .sort({ type: 1, number: 1 });
-
-    // Calculate aggregated metrics
-    const totalValue = contract.totalValue || 0;
-    const totalPaid = quotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalPending = Math.max(0, totalValue - totalPaid);
-    const averageRecaudo = totalValue > 0 ? Math.round((totalPaid / totalValue) * 100) : 0;
-
-    // Breakdown metrics
-    const initialQuotas = quotas.filter(q => q.type === 'inicial');
-    const normalQuotas = quotas.filter(q => q.type === 'normal');
-
-    const valorTotalInicial = initialQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-    const valorPagadoInicial = initialQuotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalCuotasIniciales = initialQuotas.length;
-    const cuotasInicialesPagadas = initialQuotas.filter(q => q.status === 'pagado').length;
-
-    const valorTotalCuotas = normalQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-    const valorPagadoCuotas = normalQuotas.reduce((sum, q) => sum + (q.amountPaid || 0), 0);
-    const totalCuotasNormales = normalQuotas.length;
-    const cuotasNormalesPagadas = normalQuotas.filter(q => q.status === 'pagado').length;
-
-    const lotInfo = contract.lot 
-      ? `Etapa: ${contract.lot.stage || '-'} - Manzana: ${contract.lot.manzana || '-'} - Lote: ${contract.lot.lotNumber || '-'}${contract.lot.nomenclature ? ` (${contract.lot.nomenclature})` : ''}`
-      : 'N/A';
-
-    const statementData = {
-      contractId: contract._id,
-      clientName: contract.client?.name || 'N/A',
-      clientId: contract.client?.idNumber || 'N/A',
-      clientPhone: contract.client?.phone || '',
-      clientEmail: contract.client?.email || '',
-      projectName: contract.negotiation || 'Proyecto sin nombre',
-      lotInfo,
-      companyName: company?.name || '',
-      companyNit: company?.nit || '',
-      companyAddress: company?.address || '',
-      companyPhone: company?.phone || '',
-      companyLogo: company?.projectLogo || company?.logo || '',
-      // Financial numbers
-      totalValue,
-      totalPaid,
-      totalPending,
-      averageRecaudo,
-      // Breakdown
-      valorTotalInicial,
-      valorPagadoInicial,
-      totalCuotasIniciales,
-      cuotasInicialesPagadas,
-      valorTotalCuotas,
-      valorPagadoCuotas,
-      totalCuotasNormales,
-      cuotasNormalesPagadas,
-      // Detailed list of quotas
-      quotas,
-    };
+    const statementData = toStatementPdfData(loaded);
 
     await generateStatementStream(statementData, res);
   } catch (error) {
@@ -557,6 +494,8 @@ export const sendOTPCodePublic = async (req, res, next) => {
   try {
     const { companySlug } = req.params;
     const { idNumber, type } = req.body; // type: 'email' | 'phone'
+    // The statement page asks for its own code; anything else keeps the payment wording
+    const purpose = req.body.purpose === 'statement' ? 'statement' : 'payment';
 
     if (!idNumber || !type) {
       return next(new AppError('Cédula y tipo de envío (email/phone) son requeridos', 400));
@@ -588,7 +527,7 @@ export const sendOTPCodePublic = async (req, res, next) => {
     }
 
     const { sendOTPCode } = await import('../utils/otpHelper.js');
-    const token = await sendOTPCode(client.tenantId, company._id, client._id, type, destination, company.name);
+    const token = await sendOTPCode(client.tenantId, company._id, client._id, type, destination, company.name, purpose);
 
     res.json({
       success: true,

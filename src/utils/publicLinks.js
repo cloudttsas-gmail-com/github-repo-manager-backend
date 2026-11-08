@@ -8,6 +8,7 @@ const PATHS = {
   receipt: 'receipt',
   'receipt-attempt': 'receipt/attempt',
   statement: 'statement',
+  'statement-excel': 'statement/excel',
 };
 
 const sign = (kind, id) => crypto

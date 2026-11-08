@@ -11,6 +11,7 @@ import {
   getPortalContractDetail,
   getPortalStatementPDF
 } from '../controllers/portal.controller.js';
+import { getPortalStatementExcel, sendPortalStatementEmail } from '../controllers/statement.controller.js';
 import { protect, restrictTo } from '../middleware/auth.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
 
@@ -50,5 +51,7 @@ router.post('/report-payment', upload.single('comprobante'), reportPortalPayment
 router.get('/receipt/:paymentId', getPortalReceiptPDF);
 router.get('/contract/:id', getPortalContractDetail);
 router.get('/statement/:contractId', getPortalStatementPDF);
+router.get('/statement/:contractId/excel', getPortalStatementExcel);
+router.post('/statement/:contractId/send-email', sendPortalStatementEmail);
 
 export default router;
