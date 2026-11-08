@@ -63,7 +63,8 @@ const migrateLegacyPayments = async (tenantId, companyId) => {
           amount: quota.amountPaid || quota.value || 0
         }],
         amount: quota.amountPaid || quota.value || 0,
-        banco: quota.paymentBank || 'Desconocido',
+        // The separation is recorded as paid at the sale, with no bank behind it
+        banco: quota.paymentBank || (quota.type === 'inicial' && quota.number === 0 ? 'Registrada en la venta' : 'Desconocido'),
         paymentMethod: quota.paymentMethod || 'Transferencia bancaria',
         fechaPago: quota.paymentDate || quota.updatedAt || new Date(),
         comprobante: quota.paymentCapture,
