@@ -73,5 +73,6 @@ export const statementEmail = ({ client, companyName, summary }) => {
     </div>
   `;
 
-  return { subject: `Tu estado de cuenta - ${companyName}`, html };
+  const lotPart = summary?.lotNumber ? ` - Lote ${summary.lotNumber}` : '';
+  return { subject: `Tu estado de cuenta${lotPart} - ${companyName}`, html };
 };

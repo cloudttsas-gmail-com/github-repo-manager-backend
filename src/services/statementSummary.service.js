@@ -65,7 +65,8 @@ export const quotaLabel = (q) => {
 export const lotLabel = (lot) => {
   if (!lot) return 'N/A';
   const base = `Etapa: ${lot.stage || '-'} - Manzana: ${lot.manzana || '-'} - Lote: ${lot.lotNumber || '-'}`;
-  return lot.nomenclature ? `${base} (${lot.nomenclature})` : base;
+  // The nomenclature already names stage, block and lot: never repeat them
+  return lot.nomenclature || base;
 };
 
 const byTypeAndNumber = (a, b) => {
@@ -117,6 +118,7 @@ export const buildStatementSummary = (contract, quotas, { now = new Date(), apiU
   return {
     contractId,
     lotLabel: lotLabel(lot),
+    lotNumber: lot?.lotNumber || '',
     projectName: contract.negotiation || '',
     totalValue,
     totalPaid,

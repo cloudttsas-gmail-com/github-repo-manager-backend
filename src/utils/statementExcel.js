@@ -16,7 +16,7 @@ export const buildStatementWorkbook = ({ client, company, summary }) => {
     ['Empresa', company?.name || ''],
     ['Cliente', client?.name || ''],
     ['Identificación', client?.idNumber || ''],
-    ['Proyecto', summary.projectName || ''],
+    ['Negociación', summary.projectName || ''],
     ['Inmueble', summary.lotLabel],
     ['Generado', day(summary.generatedAt)],
     ['', ''],

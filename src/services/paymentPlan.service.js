@@ -22,6 +22,16 @@ import {
 
 const SIGNED_STATUSES = ['firmado', 'con_otrosi'];
 const formatDate = (date) => (date ? toISODate(toCalendarDate(date)) : null);
+// History summaries are read by people: Colombian date, labels and money
+const displayDate = (value) => {
+  const iso = value instanceof Date ? formatDate(value) : value;
+  if (!iso || typeof iso !== 'string') return '-';
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  return `${d}/${m}/${y}`;
+};
+const LEGAL_STATUS_LABELS = { sin_firmar: 'Sin firmar', firmado: 'Firmado', con_otrosi: 'Con otrosí' };
+const legalLabel = (status) => LEGAL_STATUS_LABELS[status] || 'Sin registrar';
+const displayMoney = (value) => (value === undefined || value === null ? '-' : `$${Number(value).toLocaleString('es-CO')}`);
 const statusForDueDate = (dueDate) => (new Date(dueDate) < new Date() ? 'mora' : 'pendiente');
 
 export const getPaymentPlanPolicy = async ({ tenantId, companyId }) => {
@@ -72,13 +82,13 @@ const contractPaymentDay = (contract, quotas) => {
 };
 
 /** Sends the updated plan to the client; never fails the operation that triggered it. */
-const sendUpdatedPlan = async ({ contract, tenantId, companyId }) => {
+const sendUpdatedPlan = async ({ contract, tenantId, companyId, reason }) => {
   try {
     const client = await Client.findOne({ _id: contract.client, tenantId, companyId });
     if (!client) return;
     const quotas = await loadQuotas({ contract, tenantId, companyId });
     const { sendPaymentPlanEmail } = await import('../utils/clientAuthHelper.js');
-    await sendPaymentPlanEmail(client, quotas, contract, companyId);
+    await sendPaymentPlanEmail(client, quotas, contract, companyId, reason);
   } catch (error) {
     console.error('[PAYMENT_PLAN] Error sending the updated plan:', error);
   }
@@ -149,7 +159,7 @@ export const recalculatePlanAfterInitialPayment = async ({ contractId, tenantId,
 
     pushHistory(contract, {
       kind: 'recalculation',
-      summary: `Cuota inicial pagada completa el ${formatDate(result.initialEnd)}: cuotas ordinarias recalculadas desde esa fecha`,
+      summary: `Cuota inicial pagada completa el ${displayDate(result.initialEnd)}: cuotas ordinarias recalculadas desde esa fecha`,
       changes: { initialEnd: formatDate(result.initialEnd), quotas: changes },
       ...historyAuthor(req),
     });
@@ -162,7 +172,7 @@ export const recalculatePlanAfterInitialPayment = async ({ contractId, tenantId,
       details: { initialEnd: formatDate(result.initialEnd), quotas: changes },
     });
 
-    await sendUpdatedPlan({ contract, tenantId, companyId });
+    await sendUpdatedPlan({ contract, tenantId, companyId, reason: 'completaste el pago de tu cuota inicial y tus cuotas ordinarias se ajustaron a esa fecha' });
     return { initialEnd: result.initialEnd, changes };
   } catch (error) {
     console.error('[PAYMENT_PLAN] Error recalculating the plan after the initial payment:', error);
@@ -223,7 +233,7 @@ export const registerInitialExtension = async ({ contractId, tenantId, companyId
   if (signed) contract.legalStatus = 'con_otrosi';
   pushHistory(contract, {
     kind: signed ? 'otrosi' : 'extension',
-    summary: `Plazo de la cuota inicial ampliado del ${deadline.from} al ${deadline.to}`,
+    summary: `Plazo de la cuota inicial ampliado del ${displayDate(deadline.from)} al ${displayDate(deadline.to)}`,
     changes: { initialDeadline: deadline },
     reason,
     approvedByName,
@@ -239,7 +249,7 @@ export const registerInitialExtension = async ({ contractId, tenantId, companyId
     targetId: contract._id,
     details: { ...deadline, reason, approvedByName, approvedAt, asOtrosi: signed },
   });
-  await sendUpdatedPlan({ contract, tenantId, companyId });
+  await sendUpdatedPlan({ contract, tenantId, companyId, reason: 'se registró una ampliación del plazo de tu cuota inicial' });
   return contract;
 };
 
@@ -355,9 +365,9 @@ export const registerOtrosi = async ({ contractId, tenantId, companyId, body, fi
   if (signed) contract.legalStatus = 'con_otrosi';
   const parts = [];
   if (changes.paymentDay) parts.push(`día de pago ${changes.paymentDay.from ?? '-'} → ${changes.paymentDay.to}`);
-  if (changes.initialDeadline) parts.push(`plazo de la inicial ${changes.initialDeadline.from} → ${changes.initialDeadline.to}`);
+  if (changes.initialDeadline) parts.push(`plazo de la inicial ${displayDate(changes.initialDeadline.from)} → ${displayDate(changes.initialDeadline.to)}`);
   if (changes.installmentsCount) parts.push(`cuotas ordinarias ${changes.installmentsCount.from ?? '-'} → ${changes.installmentsCount.to}`);
-  if (changes.totalValue) parts.push(`valor ${changes.totalValue.from ?? '-'} → ${changes.totalValue.to}`);
+  if (changes.totalValue) parts.push(`valor ${displayMoney(changes.totalValue.from)} → ${displayMoney(changes.totalValue.to)}`);
   pushHistory(contract, {
     kind: 'otrosi',
     summary: `Otrosí: ${parts.join('; ')}`,
@@ -377,7 +387,7 @@ export const registerOtrosi = async ({ contractId, tenantId, companyId, body, fi
     targetId: contract._id,
     details: { changes, reason, approvedByName, approvedAt, documentUrl },
   });
-  await sendUpdatedPlan({ contract, tenantId, companyId });
+  await sendUpdatedPlan({ contract, tenantId, companyId, reason: 'se registró un otrosí a tu contrato' });
   return contract;
 };
 
@@ -402,7 +412,7 @@ export const setContractLegalStatus = async ({ contractId, tenantId, companyId, 
   contract.signedAt = status === 'firmado' ? parseBusinessDate(body.signedAt, new Date()) : undefined;
   pushHistory(contract, {
     kind: 'legal_status',
-    summary: `Estado del contrato: ${previous || 'sin registrar'} → ${next}`,
+    summary: `Estado del contrato: ${legalLabel(previous)} → ${legalLabel(next)}`,
     changes: { legalStatus: { from: previous, to: next }, signedAt: formatDate(contract.signedAt) },
     reason: typeof body.reason === 'string' ? body.reason.trim() : undefined,
     documentUrl,

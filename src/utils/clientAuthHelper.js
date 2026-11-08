@@ -108,7 +108,9 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
 
       const rows = sortedQuotas.map((q) => {
         const typeStr = q.number === 0 ? 'Separación' : q.type === 'inicial' ? `Inicial #${q.number}` : `Ordinaria #${q.number}`;
-        const formattedDueDate = q.dueDate ? new Date(q.dueDate).toISOString().split('T')[0] : 'N/A';
+        const formattedDueDate = q.dueDate
+          ? new Date(q.dueDate).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
+          : 'N/A';
         const formattedValue = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(q.value);
         return `
           <tr>
@@ -193,7 +195,8 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
 /**
  * Sends a separate email containing the client's payment plan.
  */
-export const sendPaymentPlanEmail = async (client, quotas, contract, companyId) => {
+// updateReason: why an already sent plan changed (e.g. the initial was paid or an otrosí); empty on the first plan
+export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, updateReason = '') => {
   if (!client.email || !quotas || quotas.length === 0) return;
   
   try {
@@ -211,7 +214,9 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId) 
 
     const rows = sortedQuotas.map((q) => {
       const typeStr = q.number === 0 ? 'Separación' : q.type === 'inicial' ? `Inicial #${q.number}` : `Ordinaria #${q.number}`;
-      const formattedDueDate = q.dueDate ? new Date(q.dueDate).toISOString().split('T')[0] : 'N/A';
+      const formattedDueDate = q.dueDate
+        ? new Date(q.dueDate).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
+        : 'N/A';
       const formattedValue = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(q.value);
       return `
         <tr>
@@ -229,12 +234,17 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId) 
       lotNumber = (await Lot.findById(contract.lot).select('lotNumber'))?.lotNumber;
     }
     const lotLabel = lotNumber ? ` - Lote ${lotNumber}` : '';
-    const subject = `Tu Plan de Pagos${lotLabel} - ${companyName}`;
+    const subject = updateReason
+      ? `Tu plan de pagos se actualizó${lotLabel} - ${companyName}`
+      : `Tu Plan de Pagos${lotLabel} - ${companyName}`;
+    const intro = updateReason
+      ? `Tu plan de pagos se actualizó: ${updateReason}. Este es el plan vigente; reemplaza al que recibiste antes:`
+      : 'A continuación adjuntamos el detalle de tu plan de pagos acordado para la compra de tu inmueble:';
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
         <h2 style="color: #0284c7; text-align: center;">Tu Plan de Pagos - ${companyName}</h2>
         <p>Hola <strong>${client.name}</strong>,</p>
-        <p>A continuación adjuntamos el detalle de tu plan de pagos acordado para la compra de tu inmueble:</p>
+        <p>${intro}</p>
         
         <div style="margin: 25px 0;">
           <table style="width: 100%; border-collapse: collapse; text-align: left;">
