@@ -17,3 +17,14 @@ export const parseNumStringWithLocalization = (val) => {
   const result = parseFloat(s);
   return isNaN(result) ? 0 : result;
 };
+
+/**
+ * Parses a payment amount sent by a form. Returns the number when it is finite and
+ * greater than 0, or null otherwise, so a negative, zero or non-numeric amount is
+ * rejected instead of being taken as the full quota value.
+ */
+export const parsePositiveAmount = (val) => {
+  if (val === null || val === undefined || val === '') return null;
+  const n = typeof val === 'number' ? val : Number(String(val).trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+};

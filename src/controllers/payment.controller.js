@@ -1,4 +1,3 @@
-import mongoose from 'mongoose';
 import Quota from '../models/Quota.js';
 import Contract from '../models/Contract.js';
 import Client from '../models/Client.js';
@@ -15,69 +14,8 @@ import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
 import { recalculatePlanAfterInitialPayment } from '../services/paymentPlan.service.js';
-
-const migrateLegacyPayments = async (tenantId, companyId) => {
-  try {
-    const legacyQuotas = await Quota.aggregate([
-      {
-        $match: {
-          tenantId: new mongoose.Types.ObjectId(tenantId),
-          companyId: new mongoose.Types.ObjectId(companyId),
-          $or: [
-            { paymentCapture: { $ne: null } },
-            { paymentBank: { $ne: null } },
-            { paymentDate: { $ne: null } },
-            { amountPaid: { $gt: 0 } }
-          ]
-        }
-      },
-      {
-        $lookup: {
-          from: 'paymentattempts',
-          localField: '_id',
-          foreignField: 'quotas.quotaId',
-          as: 'attempts'
-        }
-      },
-      {
-        $match: {
-          attempts: { $size: 0 }
-        }
-      },
-      {
-        $limit: 12 // Process and migrate in small batches of 12
-      }
-    ]);
-
-    for (const quota of legacyQuotas) {
-      const contract = await Contract.findById(quota.contract);
-      if (!contract) continue;
-
-      await PaymentAttempt.create({
-        tenantId: quota.tenantId,
-        companyId: quota.companyId,
-        contractId: contract._id,
-        clientId: contract.client,
-        quotas: [{
-          quotaId: quota._id,
-          amount: quota.amountPaid || quota.value || 0
-        }],
-        amount: quota.amountPaid || quota.value || 0,
-        // The separation is recorded as paid at the sale, with no bank behind it
-        banco: quota.paymentBank || (quota.type === 'inicial' && quota.number === 0 ? 'Registrada en la venta' : 'Desconocido'),
-        paymentMethod: quota.paymentMethod || 'Transferencia bancaria',
-        fechaPago: quota.paymentDate || quota.updatedAt || new Date(),
-        comprobante: quota.paymentCapture,
-        observations: quota.paymentObservations,
-        status: quota.status === 'pagado' ? 'APROBADO' : 'PENDIENTE',
-        createdAt: quota.paymentDate || quota.createdAt,
-        updatedAt: quota.updatedAt
-      });
-    }
-  } catch (err) {
-    console.error('[LOG][MIGRATE_LEGACY_PAYMENTS] Error during auto-migration:', err);
-  }
-};
+import { applyPaymentToQuotas, isAppliedToQuotas, revertAppliedPayment } from '../services/paymentApplication.service.js';
+import { parsePositiveAmount } from '../utils/math.js';
 
 /**
  * Get all quotas (payments) for a given company with server-side pagination and filtering.
@@ -86,9 +24,8 @@ const migrateLegacyPayments = async (tenantId, companyId) => {
 export const getPayments = async (req, res, next) => {
   try {
     const { tenantId, companyId, role, userId } = req.user;
-    
-    // Auto-migrate legacy payments to PaymentAttempt format (chunked migration)
-    await migrateLegacyPayments(tenantId, companyId);
+    // The listing no longer creates payments from quotas with money and no payment: those
+    // quotas are now mostly the cascade of an approval, and it created phantom payments
 
     const { page = 1, limit = 12, search, status, sortBy, order } = req.query;
 
@@ -290,8 +227,12 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
   return false;
 };
 
+const STATUS_LABELS = { APROBADO: 'aprobado', RECHAZADO: 'rechazado', PENDIENTE: 'pendiente' };
+
 /**
  * Mark a PaymentAttempt as "APROBADO" and apply its amount to the target quotas in cascade.
+ * Only a pending payment can be approved, and the change of status is atomic, so the same
+ * payment cannot be approved twice or approved after being rejected.
  */
 export const approvePayment = async (req, res, next) => {
   try {
@@ -299,135 +240,98 @@ export const approvePayment = async (req, res, next) => {
     const { id: attemptId } = req.params;
     const { observacion } = req.body;
 
-    console.log('[LOG][APPROVE_PAYMENT] Solicitud de aprobación recibida para Intento de Pago:', {
-      attemptId,
-      tenantId,
-      companyId,
-      observacion
-    });
-
     const attempt = await PaymentAttempt.findOne({ _id: attemptId, tenantId, companyId });
     if (!attempt) {
-      console.warn('[LOG][APPROVE_PAYMENT] Error: Intento de pago no encontrado con ID:', attemptId);
       return next(new AppError('Intento de pago no encontrado', 404));
     }
-
-    // Set operator observation
-    attempt.observations = observacion || '';
-
-    if (attempt.status === 'APROBADO') {
-      console.warn('[LOG][APPROVE_PAYMENT] Advertencia: El intento de pago ya fue aprobado:', attemptId);
-      return next(new AppError('Este intento de pago ya fue aprobado', 400));
+    if (attempt.status !== 'PENDIENTE') {
+      return next(new AppError(`Este pago ya fue ${STATUS_LABELS[attempt.status] || 'procesado'}`, 400));
+    }
+    const entriesValid = attempt.quotas.length > 0 && attempt.quotas.every((q) => parsePositiveAmount(q.amount) !== null);
+    if (!parsePositiveAmount(attempt.amount) || !entriesValid) {
+      return next(new AppError('El monto de este pago no es válido. Recházalo y pide al cliente que lo reporte de nuevo.', 400));
     }
 
-    if (!attempt.receiptNumber) {
-      attempt.receiptNumber = await getNextSequence(companyId, tenantId, 'RECEIPT');
+    // Claim the payment atomically before touching any quota
+    const claimed = await PaymentAttempt.findOneAndUpdate(
+      { _id: attempt._id, tenantId, companyId, status: 'PENDIENTE' },
+      { $set: { status: 'APROBADO', approvedBy: userId, approvedAt: new Date(), ...(observacion ? { observations: observacion } : {}) } },
+      { new: true },
+    );
+    if (!claimed) {
+      return next(new AppError('Este pago ya fue procesado por otra persona', 409));
     }
 
-    const paidQuotasAccumulator = [];
-
-    // Process each target quota in the attempt
-    for (const qEntry of attempt.quotas) {
-      const qDoc = await Quota.findOne({ _id: qEntry.quotaId, tenantId, companyId });
-      if (!qDoc) {
-        console.warn(`[LOG][APPROVE_PAYMENT] Advertencia: Cuota ${qEntry.quotaId} no encontrada en intento de pago.`);
-        continue;
+    const applied = [];
+    const notifyQuotaIds = [];
+    let unapplied = 0;
+    try {
+      if (!claimed.receiptNumber) {
+        claimed.receiptNumber = await getNextSequence(companyId, tenantId, 'RECEIPT');
       }
 
-      // Calculate pending value of this target quota
-      const qPendingValue = qDoc.value - (qDoc.amountPaid || 0);
-      const amountToApply = qEntry.amount;
-
-      if (amountToApply >= qPendingValue) {
-        // Fully pay this quota
-        qDoc.status = 'pagado';
-        qDoc.amountPaid = qDoc.value;
-        qDoc.paymentBank = attempt.banco;
-        qDoc.paymentMethod = attempt.paymentMethod;
-        qDoc.paymentObservations = attempt.observations;
-        qDoc.paymentDate = attempt.fechaPago || new Date();
-        qDoc.paymentCapture = attempt.comprobante;
-        qDoc.receiptNumber = attempt.receiptNumber;
-        await qDoc.save();
-        paidQuotasAccumulator.push(qDoc._id);
-
-        let excess = amountToApply - qPendingValue;
-        if (excess > 0) {
-          console.log(`[LOG][APPROVE_PAYMENT] Iniciando cascada de aprobación por exceso para cuota #${qDoc.number}. Excedente:`, excess);
-          const queryFilter = {
-            contract: qDoc.contract,
+      if (isAppliedToQuotas(attempt)) {
+        // A payment created from quotas that already had the money (legacy migration):
+        // approving it only confirms it
+        applied.push(...attempt.quotas.map((q) => ({ quotaId: q.quotaId, amount: q.amount })));
+        notifyQuotaIds.push(...attempt.quotas.map((q) => q.quotaId));
+        await Quota.updateMany(
+          { _id: { $in: notifyQuotaIds }, tenantId, companyId },
+          { $set: { receiptNumber: claimed.receiptNumber } },
+        );
+      } else {
+        for (const entry of attempt.quotas) {
+          const startQuota = await Quota.findOne({ _id: entry.quotaId, tenantId, companyId, contract: attempt.contractId });
+          if (!startQuota) {
+            throw new AppError('Una de las cuotas de este pago ya no existe. Recházalo y registra el pago de nuevo.', 400);
+          }
+          const result = await applyPaymentToQuotas({
+            startQuota,
+            amount: entry.amount,
             tenantId,
             companyId,
-            _id: { $nin: [...paidQuotasAccumulator, qDoc._id] },
-            status: { $in: ['pendiente', 'mora'] }
-          };
-
-          const pendingQuotas = await Quota.find(queryFilter).sort({ type: 1, number: 1 });
-          for (const pq of pendingQuotas) {
-            if (excess <= 0) break;
-
-            const pqPendingValue = pq.value - (pq.amountPaid || 0);
-            if (excess >= pqPendingValue) {
-              pq.status = 'pagado';
-              pq.amountPaid = pq.value;
-              pq.paymentBank = attempt.banco;
-              pq.paymentMethod = attempt.paymentMethod;
-              pq.paymentObservations = `${attempt.observations || ''} (Abono por excedente cuota #${qDoc.number})`;
-              pq.paymentDate = attempt.fechaPago || new Date();
-              pq.paymentCapture = attempt.comprobante;
-              pq.receiptNumber = attempt.receiptNumber;
-              await pq.save();
-              paidQuotasAccumulator.push(pq._id);
-              excess -= pqPendingValue;
-            } else {
-              pq.amountPaid = (pq.amountPaid || 0) + excess;
-              pq.paymentBank = attempt.banco;
-              pq.paymentMethod = attempt.paymentMethod;
-              pq.paymentObservations = `${attempt.observations || ''} (Abono parcial por excedente cuota #${qDoc.number})`;
-              pq.paymentDate = attempt.fechaPago || new Date();
-              pq.paymentCapture = attempt.comprobante;
-              pq.receiptNumber = attempt.receiptNumber;
-              await pq.save();
-              excess = 0;
-            }
-          }
+            applied,
+            payment: {
+              bank: claimed.banco,
+              method: claimed.paymentMethod,
+              observations: claimed.observations,
+              date: claimed.fechaPago || new Date(),
+              capture: claimed.comprobante,
+              receiptNumber: claimed.receiptNumber,
+            },
+          });
+          notifyQuotaIds.push(...result.notifyQuotaIds);
+          unapplied += result.unapplied;
         }
-      } else {
-        // Partially pay this quota
-        qDoc.amountPaid = (qDoc.amountPaid || 0) + amountToApply;
-        if (qDoc.amountPaid >= qDoc.value) {
-          qDoc.status = 'pagado';
-        }
-        qDoc.paymentBank = attempt.banco;
-        qDoc.paymentMethod = attempt.paymentMethod;
-        qDoc.paymentObservations = attempt.observations;
-        qDoc.paymentDate = attempt.fechaPago || new Date();
-        qDoc.paymentCapture = attempt.comprobante;
-        qDoc.receiptNumber = attempt.receiptNumber;
-        await qDoc.save();
-        paidQuotasAccumulator.push(qDoc._id);
       }
-    }
 
-    // Update attempt status
-    attempt.status = 'APROBADO';
-    attempt.approvedBy = userId;
-    attempt.approvedAt = new Date();
-    await attempt.save();
+      // The payment records every quota it reached, cascade included, so rejecting,
+      // editing, the receipt and Siigo use what was really applied
+      claimed.quotas = applied;
+      claimed.appliedToQuotas = true;
+      claimed.unappliedAmount = unapplied;
+      await claimed.save();
+    } catch (applyError) {
+      // Leave the payment as it was: pending and off the quotas
+      await revertAppliedPayment({ entries: applied, tenantId, companyId });
+      const original = attempt.toObject();
+      await PaymentAttempt.collection.updateOne(
+        { _id: attempt._id },
+        {
+          $set: { status: 'PENDIENTE', quotas: original.quotas, observations: original.observations },
+          $unset: { approvedBy: 1, approvedAt: 1 },
+        },
+      );
+      throw applyError;
+    }
 
     // Initial quota fully paid: the ordinary quotas follow its completion date (new plan rules only)
-    const touchedContractIds = await Quota.distinct('contract', { _id: { $in: attempt.quotas.map((q) => q.quotaId) }, tenantId, companyId });
-    for (const contractId of touchedContractIds) {
-      await recalculatePlanAfterInitialPayment({ contractId, tenantId, companyId, req });
-    }
+    await recalculatePlanAfterInitialPayment({ contractId: claimed.contractId, tenantId, companyId, req });
 
     // Evaluate commission milestones (comisiones Fase 3)
     try {
       const { evaluateCommissionMilestones } = await import('../services/commission.service.js');
-      const affectedContractIds = await Quota.distinct('contract', { _id: { $in: paidQuotasAccumulator } });
-      for (const contractId of affectedContractIds) {
-        await evaluateCommissionMilestones({ contractId, tenantId, companyId });
-      }
+      await evaluateCommissionMilestones({ contractId: claimed.contractId, tenantId, companyId });
     } catch (commissionError) {
       console.error('[LOG][APPROVE_PAYMENT] Error evaluando hitos de comisión:', commissionError);
     }
@@ -435,7 +339,7 @@ export const approvePayment = async (req, res, next) => {
     // Send notifications
     try {
       const { sendConsolidatedPaymentNotifications } = await import('../utils/consolidatedNotifications.js');
-      await sendConsolidatedPaymentNotifications(req, paidQuotasAccumulator, companyId);
+      await sendConsolidatedPaymentNotifications(req, notifyQuotaIds, companyId);
     } catch (notificationError) {
       console.error('[LOG][APPROVE_PAYMENT] Error al enviar notificaciones consolidadas:', notificationError);
     }
@@ -443,13 +347,15 @@ export const approvePayment = async (req, res, next) => {
     await logAudit(req, {
       action: 'APPROVE_PAYMENT',
       module: 'PAYMENTS',
-      targetId: attempt._id,
-      details: { amount: attempt.amount, quotasCount: attempt.quotas.length, approvedCount: paidQuotasAccumulator.length }
+      targetId: claimed._id,
+      details: { amount: claimed.amount, quotasCount: applied.length, unappliedAmount: unapplied },
     });
 
     res.json({
       success: true,
-      message: 'Intento de pago aprobado y cuotas actualizadas exitosamente',
+      message: unapplied > 0
+        ? `Pago aprobado. $${unapplied.toLocaleString('es-CO')} superan el saldo del contrato y quedaron sin aplicar a ninguna cuota.`
+        : 'Intento de pago aprobado y cuotas actualizadas exitosamente',
     });
   } catch (error) {
     console.error('[LOG][APPROVE_PAYMENT] Error crítico en aprobación:', error);
@@ -458,7 +364,9 @@ export const approvePayment = async (req, res, next) => {
 };
 
 /**
- * Mark a PaymentAttempt as "RECHAZADO" (rejected).
+ * Mark a pending PaymentAttempt as "RECHAZADO" (rejected).
+ * A client report was never applied to its quotas, so rejecting it leaves them untouched.
+ * An approved payment is corrected with "Editar", not rejected.
  */
 export const rejectPayment = async (req, res, next) => {
   try {
@@ -470,45 +378,43 @@ export const rejectPayment = async (req, res, next) => {
     if (!attempt) {
       return next(new AppError('Intento de pago no encontrado', 404));
     }
-
-    // Rollback quota updates for all associated quotas
-    for (const qEntry of attempt.quotas) {
-      const qDoc = await Quota.findOne({ _id: qEntry.quotaId, tenantId, companyId });
-      if (qDoc) {
-        qDoc.amountPaid = Math.max(0, (qDoc.amountPaid || 0) - qEntry.amount);
-        
-        if (qDoc.amountPaid < qDoc.value) {
-          const now = new Date();
-          qDoc.status = qDoc.dueDate < now ? 'mora' : 'pendiente';
-        }
-        
-        if (qDoc.amountPaid === 0) {
-          qDoc.paymentBank = undefined;
-          qDoc.paymentMethod = undefined;
-          qDoc.paymentObservations = undefined;
-          qDoc.paymentDate = undefined;
-          qDoc.paymentCapture = undefined;
-        }
-        await qDoc.save();
-      }
+    if (attempt.status !== 'PENDIENTE') {
+      return next(new AppError(`Este pago ya fue ${STATUS_LABELS[attempt.status] || 'procesado'}. Un pago aprobado se corrige con «Editar».`, 400));
     }
 
-    attempt.status = 'RECHAZADO';
-    attempt.rejectedReason = rejectedReason || observacion || 'Rechazado por el administrador';
-    attempt.rejectedBy = userId;
-    attempt.rejectedAt = new Date();
-    await attempt.save();
+    const claimed = await PaymentAttempt.findOneAndUpdate(
+      { _id: attempt._id, tenantId, companyId, status: 'PENDIENTE' },
+      {
+        $set: {
+          status: 'RECHAZADO',
+          rejectedReason: rejectedReason || observacion || 'Rechazado por el administrador',
+          rejectedBy: userId,
+          rejectedAt: new Date(),
+          appliedToQuotas: false,
+        },
+      },
+      { new: true },
+    );
+    if (!claimed) {
+      return next(new AppError('Este pago ya fue procesado por otra persona', 409));
+    }
+
+    // Only a pending payment created from quotas that already had the money takes it back
+    const reverted = isAppliedToQuotas(attempt);
+    if (reverted) {
+      await revertAppliedPayment({ entries: attempt.quotas, tenantId, companyId });
+    }
 
     await logAudit(req, {
       action: 'REJECT_PAYMENT',
       module: 'PAYMENTS',
-      targetId: attempt._id,
-      details: { amount: attempt.amount, rejectedReason: attempt.rejectedReason }
+      targetId: claimed._id,
+      details: { amount: claimed.amount, rejectedReason: claimed.rejectedReason, revertedQuotas: reverted },
     });
 
     res.json({
       success: true,
-      message: 'Intento de pago rechazado y cuotas revertidas exitosamente',
+      message: 'Pago rechazado',
     });
   } catch (error) {
     next(error);
@@ -522,13 +428,10 @@ export const registerManualPayment = async (req, res, next) => {
   let releaseRequest = async () => {};
   let quotasChanged = false;
   try {
-    const { tenantId, companyId, role } = req.user;
+    const { tenantId, companyId } = req.user;
     const { quotaId, amount, bank, bankAccountId, observations, paymentDate, fechaPago, paymentMethod, paymentOption, requestId } = req.body;
 
-    const isAdmin = ['superadmin', 'tenant_admin', 'company_admin', 'administrador'].includes(role);
-    if ((bank === 'Cruce de cuentas' || paymentMethod === 'Cruce de cuentas') && !isAdmin) {
-      return next(new AppError('No tienes permiso para registrar pagos por cruce de cuentas', 403));
-    }
+    // Cash and account crosses are open to everyone who may register payments (decided 8 Nov)
     const file = req.file;
 
     console.log('[LOG][REGISTER_MANUAL_PAYMENT] Solicitud de pago manual recibida:', {
@@ -560,6 +463,10 @@ export const registerManualPayment = async (req, res, next) => {
     if (!bank && !bankAccountId && !isCash && !isCross) {
       return next(new AppError('Indica el banco o la cuenta a la que llegó el pago', 400));
     }
+    const paidAmount = parsePositiveAmount(amount);
+    if (paidAmount === null) {
+      return next(new AppError('El monto del pago debe ser un número mayor a 0', 400));
+    }
     const fallbackBank = isCash ? 'Efectivo' : 'Cruce de cuentas';
     const bankChoice = await resolveBankChoice(companyId, { bankAccountId, bank: bank || fallbackBank });
     releaseRequest = await claimPaymentRequest(`manual:${companyId}`, requestId);
@@ -589,122 +496,21 @@ export const registerManualPayment = async (req, res, next) => {
     const manualReceiptNumber = await getNextSequence(companyId, tenantId, 'RECEIPT');
 
     // Admin payments are auto-approved. If there is a payment excess, it cascades sequentially.
-    const paidAmount = parseFloat(amount) || quota.value;
     const quotaPendingValue = quota.value - (quota.amountPaid || 0);
-
-    const paidQuotasAccumulator = [];
-    const quotasToRecord = [];
-
-    console.log('[LOG][REGISTER_MANUAL_PAYMENT] Montos a procesar:', {
-      paidAmount,
-      quotaPendingValue,
-      isExcess: paidAmount > quotaPendingValue
+    const { applied: quotasToRecord, notifyQuotaIds: paidQuotasAccumulator, unapplied } = await applyPaymentToQuotas({
+      startQuota: quota,
+      amount: paidAmount,
+      tenantId,
+      companyId,
+      payment: {
+        bank: bankChoice.banco,
+        method: paymentMethod,
+        observations,
+        date: finalPaymentDate,
+        capture: captureUrl,
+        receiptNumber: manualReceiptNumber,
+      },
     });
-
-    if (paidAmount > quotaPendingValue) {
-      let excess = paidAmount - quotaPendingValue;
-      quotasToRecord.push({ quotaId: quota._id, amount: quotaPendingValue });
-      console.log('[LOG][REGISTER_MANUAL_PAYMENT] Iniciando cascada de pago por exceso. Excedente inicial:', excess);
-      
-      // Fully pay the selected quota
-      quota.status = 'pagado';
-      quota.amountPaid = quota.value;
-      quota.paymentBank = bank;
-      quota.paymentMethod = paymentMethod;
-      quota.paymentObservations = `${observations || ''} (Pago inicial)`;
-      quota.paymentDate = finalPaymentDate;
-      quota.receiptNumber = manualReceiptNumber;
-      if (captureUrl) {
-        quota.paymentCapture = captureUrl;
-      }
-      await quota.save();
-      paidQuotasAccumulator.push(quota._id);
-      console.log('[LOG][REGISTER_MANUAL_PAYMENT] Cuota principal guardada y pagada en su totalidad.');
-
-      // Fetch subsequent pending or in-mora quotas for this contract, sorted by type (inicial first) and number
-      const queryFilter = {
-        contract: quota.contract,
-        tenantId,
-        companyId,
-        _id: { $ne: quotaId },
-        status: { $in: ['pendiente', 'mora'] }
-      };
-
-      console.log('[LOG][REGISTER_MANUAL_PAYMENT] Buscando cuotas subsecuentes para cascada con filtro:', queryFilter);
-
-      const pendingQuotas = await Quota.find(queryFilter).sort({ type: 1, number: 1 });
-      console.log(`[LOG][REGISTER_MANUAL_PAYMENT] Se encontraron ${pendingQuotas.length} cuotas pendientes subsecuentes para cascada.`);
-
-      for (const pq of pendingQuotas) {
-        if (excess <= 0) {
-          console.log('[LOG][REGISTER_MANUAL_PAYMENT] El excedente se ha agotado. Deteniendo cascada.');
-          break;
-        }
-
-        const pqPendingValue = pq.value - (pq.amountPaid || 0);
-        console.log(`[LOG][REGISTER_MANUAL_PAYMENT] Procesando cuota #${pq.number}:`, {
-          quotaId: pq._id,
-          value: pq.value,
-          amountPaidBefore: pq.amountPaid,
-          pendingValueNeeded: pqPendingValue,
-          currentExcessLeft: excess
-        });
-
-        if (excess >= pqPendingValue) {
-          // Fully pay this quota
-          pq.status = 'pagado';
-          pq.amountPaid = pq.value;
-          pq.paymentBank = bank;
-          pq.paymentMethod = paymentMethod;
-          pq.paymentObservations = `${observations || ''} (Excedente en cascada de pago de la cuota #${quota.number})`;
-          pq.paymentDate = finalPaymentDate;
-          pq.receiptNumber = manualReceiptNumber;
-          if (captureUrl) {
-            pq.paymentCapture = captureUrl;
-          }
-          await pq.save();
-          paidQuotasAccumulator.push(pq._id);
-          quotasToRecord.push({ quotaId: pq._id, amount: pqPendingValue });
-          console.log(`[LOG][REGISTER_MANUAL_PAYMENT] Cuota #${pq.number} PAGADA totalmente con excedente.`);
-
-          excess -= pqPendingValue;
-        } else {
-          // Partially pay this quota
-          pq.amountPaid = (pq.amountPaid || 0) + excess;
-          pq.paymentBank = bank;
-          pq.paymentMethod = paymentMethod;
-          pq.paymentObservations = `${observations || ''} (Abono parcial en cascada de pago de la cuota #${quota.number})`;
-          pq.paymentDate = finalPaymentDate;
-          pq.receiptNumber = manualReceiptNumber;
-          if (captureUrl) {
-            pq.paymentCapture = captureUrl;
-          }
-          await pq.save();
-          quotasToRecord.push({ quotaId: pq._id, amount: excess });
-          console.log(`[LOG][REGISTER_MANUAL_PAYMENT] Cuota #${pq.number} ABONADA parcialmente con saldo restante de ${excess}.`);
-
-          excess = 0;
-        }
-      }
-    } else {
-      console.log('[LOG][REGISTER_MANUAL_PAYMENT] El pago es igual o menor al saldo pendiente de la cuota. Sin cascada.');
-      quotasToRecord.push({ quotaId: quota._id, amount: paidAmount });
-      quota.amountPaid = (quota.amountPaid || 0) + paidAmount;
-      if (quota.amountPaid >= quota.value) {
-        quota.status = 'pagado';
-      }
-      quota.paymentBank = bank;
-      quota.paymentMethod = paymentMethod;
-      quota.paymentObservations = observations;
-      quota.paymentDate = finalPaymentDate;
-      quota.receiptNumber = manualReceiptNumber;
-      if (captureUrl) {
-        quota.paymentCapture = captureUrl;
-      }
-      await quota.save();
-      paidQuotasAccumulator.push(quota._id);
-      console.log('[LOG][REGISTER_MANUAL_PAYMENT] Cuota guardada exitosamente.');
-    }
 
     // Immediately create the PaymentAttempt as approved
     try {
@@ -725,6 +531,8 @@ export const registerManualPayment = async (req, res, next) => {
         comprobante: captureUrl || undefined,
         observations: observations,
         receiptNumber: manualReceiptNumber,
+        appliedToQuotas: true,
+        unappliedAmount: unapplied,
         status: 'APROBADO',
         approvedBy: req.user.userId,
         approvedAt: new Date()
@@ -913,50 +721,35 @@ export const editPayment = async (req, res, next) => {
     if (!attempt) {
       return next(new AppError('Intento de pago no encontrado', 404));
     }
+    // Only an approved payment is on the quotas; a pending one is approved or rejected first
+    if (attempt.status !== 'APROBADO') {
+      return next(new AppError('Solo se pueden editar pagos aprobados. Aprueba o rechaza primero este pago.', 400));
+    }
 
     const oldAmount = attempt.amount;
-    const newAmount = amount !== undefined && amount !== null ? parseFloat(amount) : oldAmount;
+    const newAmount = amount !== undefined && amount !== null && amount !== '' ? parsePositiveAmount(amount) : oldAmount;
 
-    if (isNaN(newAmount) || newAmount <= 0) {
+    if (newAmount === null) {
       return next(new AppError('El nuevo monto del pago debe ser un número válido mayor a 0', 400));
     }
+    const bankChoice = bankAccountId ? await resolveBankChoice(companyId, { bankAccountId }) : null;
 
-    // 1. Rollback all quotas previously credited by this payment attempt
-    for (const qEntry of attempt.quotas) {
-      const qDoc = await Quota.findOne({ _id: qEntry.quotaId, tenantId, companyId });
-      if (qDoc) {
-        const deducted = Math.max(0, (qDoc.amountPaid || 0) - qEntry.amount);
-        qDoc.amountPaid = deducted;
-        if (qDoc.amountPaid < qDoc.value) {
-          const now = new Date();
-          qDoc.status = qDoc.dueDate < now ? 'mora' : 'pendiente';
-        }
-        if (qDoc.amountPaid === 0) {
-          qDoc.paymentBank = undefined;
-          qDoc.paymentMethod = undefined;
-          qDoc.paymentObservations = undefined;
-          qDoc.paymentDate = undefined;
-          qDoc.paymentCapture = undefined;
-          qDoc.receiptNumber = undefined;
-        }
-        await qDoc.save();
-      }
-    }
+    // 1. Take back everything this payment applied, cascade included
+    await revertAppliedPayment({ entries: attempt.quotas, tenantId, companyId });
 
-    // 2. Identify the target initial quota for this payment (the first quota in attempt.quotas)
+    // 2. The payment is applied again from the quota it was made for
     const primaryQuotaId = attempt.quotas.length > 0 ? attempt.quotas[0].quotaId : null;
     let primaryQuota = primaryQuotaId ? await Quota.findOne({ _id: primaryQuotaId, tenantId, companyId }) : null;
 
     if (!primaryQuota) {
       // Fallback to first pending quota of the contract
-      primaryQuota = await Quota.findOne({ contract: attempt.contractId, tenantId, companyId }).sort({ type: 1, number: 1 });
+      primaryQuota = await Quota.findOne({ contract: attempt.contractId, tenantId, companyId, status: { $in: ['pendiente', 'mora'] } }).sort({ type: 1, number: 1 });
     }
 
     if (!primaryQuota) {
       return next(new AppError('No se encontró una cuota asociada al contrato para aplicar el pago', 404));
     }
 
-    const bankChoice = bankAccountId ? await resolveBankChoice(companyId, { bankAccountId }) : null;
     const finalBank = bankChoice?.banco || bank || attempt.banco || 'Efectivo';
     const finalMethod = paymentMethod || attempt.paymentMethod || 'Efectivo';
     const finalDate = parseBusinessDate(paymentDate, attempt.fechaPago || new Date());
@@ -964,86 +757,20 @@ export const editPayment = async (req, res, next) => {
     const finalReceiptNumber = attempt.receiptNumber || (await getNextSequence(companyId, tenantId, 'RECEIPT'));
 
     // 3. Re-apply the newAmount in cascade starting from primaryQuota
-    const paidQuotasAccumulator = [];
-    const newQuotasToRecord = [];
-
-    let excess = newAmount;
-
-    // First process primaryQuota
-    const primaryPending = primaryQuota.value - (primaryQuota.amountPaid || 0);
-    if (excess >= primaryPending) {
-      primaryQuota.status = 'pagado';
-      primaryQuota.amountPaid = primaryQuota.value;
-      primaryQuota.paymentBank = finalBank;
-      primaryQuota.paymentMethod = finalMethod;
-      primaryQuota.paymentObservations = `${finalObservations || ''} (Pago principal editado)`;
-      primaryQuota.paymentDate = finalDate;
-      primaryQuota.receiptNumber = finalReceiptNumber;
-      if (attempt.comprobante) {
-        primaryQuota.paymentCapture = attempt.comprobante;
-      }
-      await primaryQuota.save();
-      paidQuotasAccumulator.push(primaryQuota._id);
-      newQuotasToRecord.push({ quotaId: primaryQuota._id, amount: primaryPending });
-      excess -= primaryPending;
-
-      // If there is excess, cascade to subsequent pending/mora quotas of this contract
-      if (excess > 0) {
-        const queryFilter = {
-          contract: primaryQuota.contract,
-          tenantId,
-          companyId,
-          _id: { $ne: primaryQuota._id },
-          status: { $in: ['pendiente', 'mora'] }
-        };
-        const nextQuotas = await Quota.find(queryFilter).sort({ type: 1, number: 1 });
-        for (const pq of nextQuotas) {
-          if (excess <= 0) break;
-          const pqPending = pq.value - (pq.amountPaid || 0);
-          if (excess >= pqPending) {
-            pq.status = 'pagado';
-            pq.amountPaid = pq.value;
-            pq.paymentBank = finalBank;
-            pq.paymentMethod = finalMethod;
-            pq.paymentObservations = `${finalObservations || ''} (Excedente cascada)`;
-            pq.paymentDate = finalDate;
-            pq.receiptNumber = finalReceiptNumber;
-            if (attempt.comprobante) pq.paymentCapture = attempt.comprobante;
-            await pq.save();
-            paidQuotasAccumulator.push(pq._id);
-            newQuotasToRecord.push({ quotaId: pq._id, amount: pqPending });
-            excess -= pqPending;
-          } else {
-            pq.amountPaid = (pq.amountPaid || 0) + excess;
-            pq.paymentBank = finalBank;
-            pq.paymentMethod = finalMethod;
-            pq.paymentObservations = `${finalObservations || ''} (Abono parcial cascada)`;
-            pq.paymentDate = finalDate;
-            pq.receiptNumber = finalReceiptNumber;
-            if (attempt.comprobante) pq.paymentCapture = attempt.comprobante;
-            await pq.save();
-            newQuotasToRecord.push({ quotaId: pq._id, amount: excess });
-            excess = 0;
-          }
-        }
-      }
-    } else {
-      // Partial payment on primary quota
-      primaryQuota.amountPaid = (primaryQuota.amountPaid || 0) + excess;
-      if (primaryQuota.amountPaid >= primaryQuota.value) {
-        primaryQuota.status = 'pagado';
-      }
-      primaryQuota.paymentBank = finalBank;
-      primaryQuota.paymentMethod = finalMethod;
-      primaryQuota.paymentObservations = finalObservations;
-      primaryQuota.paymentDate = finalDate;
-      primaryQuota.receiptNumber = finalReceiptNumber;
-      if (attempt.comprobante) primaryQuota.paymentCapture = attempt.comprobante;
-      await primaryQuota.save();
-      paidQuotasAccumulator.push(primaryQuota._id);
-      newQuotasToRecord.push({ quotaId: primaryQuota._id, amount: excess });
-      excess = 0;
-    }
+    const { applied: newQuotasToRecord, unapplied } = await applyPaymentToQuotas({
+      startQuota: primaryQuota,
+      amount: newAmount,
+      tenantId,
+      companyId,
+      payment: {
+        bank: finalBank,
+        method: finalMethod,
+        observations: finalObservations,
+        date: finalDate,
+        capture: attempt.comprobante,
+        receiptNumber: finalReceiptNumber,
+      },
+    });
 
     // 4. Update the PaymentAttempt document
     attempt.amount = newAmount;
@@ -1054,6 +781,8 @@ export const editPayment = async (req, res, next) => {
     attempt.fechaPago = finalDate;
     attempt.observations = finalObservations;
     attempt.quotas = newQuotasToRecord;
+    attempt.appliedToQuotas = true;
+    attempt.unappliedAmount = unapplied;
     attempt.receiptNumber = finalReceiptNumber;
     attempt.editedBy = userId;
     attempt.editedAt = new Date();

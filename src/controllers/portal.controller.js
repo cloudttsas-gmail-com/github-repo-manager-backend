@@ -16,6 +16,7 @@ import { recordDelivery } from './statement.controller.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
+import { parsePositiveAmount } from '../utils/math.js';
 
 /**
  * Get dashboard home data for the client portal
@@ -364,7 +365,10 @@ export const reportPortalPayment = async (req, res, next) => {
     }
 
     const targetDate = parseBusinessDate(fechaPago);
-    const paymentAmount = parseFloat(amount);
+    const paymentAmount = parsePositiveAmount(amount);
+    if (paymentAmount === null) {
+      return next(new AppError('Indica el monto que pagaste, mayor a 0', 400));
+    }
 
     // Tipo de pago seleccionado por el cliente: TOTAL / MINIMO / OTRO (o PARCIAL si no llega)
     const VALID_PAYMENT_TYPES = ['TOTAL', 'MINIMO', 'OTRO'];
@@ -393,6 +397,7 @@ export const reportPortalPayment = async (req, res, next) => {
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,
       status: 'PENDIENTE',
+      appliedToQuotas: false,
     }).catch(async (createError) => {
       await releaseRequest();
       throw createError;

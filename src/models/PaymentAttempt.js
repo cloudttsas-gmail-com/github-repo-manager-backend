@@ -87,6 +87,16 @@ const paymentAttemptSchema = new mongoose.Schema({
     default: 'PENDIENTE',
     index: true,
   },
+  // Whether the amounts in `quotas` are on the quotas' amountPaid: false for a client
+  // report until it is approved. Older payments do not have it (see isAppliedToQuotas)
+  appliedToQuotas: {
+    type: Boolean,
+  },
+  // Part of the amount left over once every quota of the contract was paid
+  unappliedAmount: {
+    type: Number,
+    default: 0,
+  },
   rejectedReason: {
     type: String,
   },
@@ -107,6 +117,16 @@ const paymentAttemptSchema = new mongoose.Schema({
   receiptNumber: {
     type: Number,
     index: true,
+  },
+  editedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  editedAt: {
+    type: Date,
+  },
+  editReason: {
+    type: String,
   },
 }, { timestamps: true });
 

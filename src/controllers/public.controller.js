@@ -13,6 +13,7 @@ import { generateStatementStream } from '../utils/statement.js';
 import { loadStatement, toStatementPdfData } from '../services/statementSummary.service.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
+import { parsePositiveAmount } from '../utils/math.js';
 
 /**
  * Generate a dynamic PDF receipt for a paid quota (Public endpoint)
@@ -61,16 +62,20 @@ export const getReceiptPDF = async (req, res, next) => {
     // 3. Search attempt by specific receiptNumber if provided in query or on the quota
     const targetReceiptNumber = receiptNumber ? Number(receiptNumber) : (quota?.receiptNumber || null);
 
-    if (!attempt && targetReceiptNumber) {
-      if (quota) {
-        attempt = await PaymentAttempt.findOne({
-          'quotas.quotaId': quota._id,
-          receiptNumber: targetReceiptNumber,
-          status: 'APROBADO',
-        });
-      }
+    // Receipt numbers restart at 1 in every company, so the search never leaves the
+    // quota's own contract: the number in the link is not signed
+    if (!attempt && targetReceiptNumber && quota) {
+      attempt = await PaymentAttempt.findOne({
+        'quotas.quotaId': quota._id,
+        receiptNumber: targetReceiptNumber,
+        status: 'APROBADO',
+      });
       if (!attempt) {
+        // A quota reached by the cascade of an older approval carries the payment's
+        // number without being listed in it
         attempt = await PaymentAttempt.findOne({
+          companyId: quota.companyId,
+          contractId: quota.contract?._id || quota.contract,
           receiptNumber: targetReceiptNumber,
           status: 'APROBADO',
         });
@@ -378,7 +383,11 @@ export const reportPayment = async (req, res, next) => {
     const targetDate = parseBusinessDate(paymentDate || fechaPago);
     console.log('[LOG][PUBLIC_REPORT_PAYMENT] Fecha determinada para el pago:', targetDate);
 
-    const paymentAmount = parseFloat(amount) || quota.value;
+    // A negative, zero or non-numeric amount used to be taken as the full quota value
+    const paymentAmount = parsePositiveAmount(amount);
+    if (paymentAmount === null) {
+      return next(new AppError('Indica el monto que pagaste, mayor a 0', 400));
+    }
 
     // Tipo de pago seleccionado por el cliente: TOTAL / MINIMO / OTRO (o PARCIAL si no llega)
     const VALID_PAYMENT_TYPES = ['TOTAL', 'MINIMO', 'OTRO'];
@@ -416,6 +425,7 @@ export const reportPayment = async (req, res, next) => {
       comprobante: captureUrl || undefined,
       observations: observations || '',
       status: 'PENDIENTE',
+      appliedToQuotas: false,
     }).catch(async (createError) => {
       await VerificationToken.updateOne({ _id: verifiedSession._id }, { $set: { isUsed: false } });
       throw createError;

@@ -147,7 +147,7 @@ describe('Integration Test - Payments API', () => {
     expect(updatedQuota.paymentBank).toBe('Bancolombia');
   });
 
-  it('should revert a payment to pending (REJECT/REVERT)', async () => {
+  it('an approved payment cannot be rejected: it is corrected with edit (REJECT)', async () => {
     const attempt = await PaymentAttempt.findOne({ contractId: testContractId });
     expect(attempt).not.toBeNull();
     const testAttemptId = attempt._id.toString();
@@ -156,22 +156,25 @@ describe('Integration Test - Payments API', () => {
       .put(`/api/payments/${testAttemptId}/reject?companyId=${companyId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(res.body.message).toMatch(/revertidas exitosamente|pendiente/i);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toMatch(/Editar/);
 
     // Verify in DB
     const updatedQuota = await Quota.findById(testQuotaId);
-    expect(['pendiente', 'mora']).toContain(updatedQuota.status);
+    expect(updatedQuota.status).toBe('pagado');
+    expect(updatedQuota.amountPaid).toBe(4000000);
   });
 
-  it('should approve a payment (APPROVE)', async () => {
-    const attempt = await PaymentAttempt.findOne({ contractId: testContractId });
-    expect(attempt).not.toBeNull();
-    const testAttemptId = attempt._id.toString();
+  it('should approve a reported payment (APPROVE)', async () => {
+    const next = await Quota.findOne({ contract: testContractId, status: 'pendiente' }).sort({ type: 1, number: 1 });
+    const attempt = await PaymentAttempt.create({
+      tenantId: next.tenantId, companyId: next.companyId, contractId: testContractId, clientId: testClientId,
+      quotas: [{ quotaId: next._id, amount: next.value }], amount: next.value, quotaValue: next.value,
+      banco: 'Bancolombia', paymentMethod: 'Transferencia bancaria', fechaPago: new Date(), status: 'PENDIENTE', appliedToQuotas: false,
+    });
 
     const res = await request(app)
-      .put(`/api/payments/${testAttemptId}/approve?companyId=${companyId}`)
+      .put(`/api/payments/${attempt._id}/approve?companyId=${companyId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.statusCode).toBe(200);
@@ -179,8 +182,9 @@ describe('Integration Test - Payments API', () => {
     expect(res.body.message).toMatch(/aprobado|pagada/i);
 
     // Verify in DB
-    const updatedQuota = await Quota.findById(testQuotaId);
+    const updatedQuota = await Quota.findById(next._id);
     expect(updatedQuota.status).toBe('pagado');
+    await PaymentAttempt.deleteOne({ _id: attempt._id });
   });
 
   it('should fetch the list of payments (READ LIST)', async () => {
