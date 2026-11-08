@@ -12,6 +12,8 @@ import Quota from '../models/Quota.js';
 import UserAccount from '../models/UserAccount.js';
 import User from '../models/User.js';
 import { publicLinkUrl } from '../utils/publicLinks.js';
+import { buildStatementSummary, startOfBogotaDay } from '../services/statementSummary.service.js';
+import { sendClientStatement, shareClientStatementLink, getClientStatementDeliveries } from '../controllers/statement.controller.js';
 
 const router = express.Router();
 
@@ -100,17 +102,39 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
       },
       {
         $addFields: {
-          'contracts.paidQuotas': {
-            $filter: { input: '$allQuotas', as: 'q', cond: { $eq: ['$$q.status', 'pagado'] } },
-          },
+          // Overdue and paid follow the statement summary (statementSummary.service.js):
+          // an unpaid balance with a due day before today is overdue, whatever the stored status says
           'contracts.moraQuotas': {
-            $filter: { input: '$allQuotas', as: 'q', cond: { $eq: ['$$q.status', 'mora'] } },
+            $filter: {
+              input: '$allQuotas',
+              as: 'q',
+              cond: {
+                $and: [
+                  { $ne: ['$$q.status', 'pagado'] },
+                  { $lt: ['$$q.dueDate', startOfBogotaDay()] },
+                  { $gt: [{ $subtract: [{ $ifNull: ['$$q.value', 0] }, { $ifNull: ['$$q.amountPaid', 0] }] }, 0] },
+                ],
+              },
+            },
+          },
+          'contracts.paidAmounts': {
+            $map: {
+              input: '$allQuotas',
+              as: 'q',
+              in: {
+                $cond: [
+                  { $eq: ['$$q.status', 'pagado'] },
+                  { $cond: [{ $gt: [{ $ifNull: ['$$q.amountPaid', 0] }, 0] }, '$$q.amountPaid', { $ifNull: ['$$q.value', 0] }] },
+                  { $ifNull: ['$$q.amountPaid', 0] },
+                ],
+              },
+            },
           },
         },
       },
       {
         $addFields: {
-          'contracts.totalPagadoQuotas': { $sum: '$contracts.paidQuotas.value' },
+          'contracts.totalPagadoQuotas': { $sum: '$contracts.paidAmounts' },
           'contracts.hasMora': { $gt: [{ $size: '$contracts.moraQuotas' }, 0] },
         },
       },
@@ -258,54 +282,37 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
       const contractId = new mongoose.Types.ObjectId(contract._id);
       
       // Find all quotas for this contract
-      const allQuotas = await Quota.find({ 
-        contract: contractId, 
+      const allQuotas = await Quota.find({
+        contract: contractId,
+        tenantId,
+        companyId,
       }).sort({ type: 1, number: 1 });
       
-      const initialQuotas = allQuotas.filter((q) => q.type === 'inicial');
-      const normalQuotas = allQuotas.filter((q) => q.type === 'normal');
-
-      const paidInitial = initialQuotas.filter((q) => q.status === 'pagado');
-      const paidNormal = normalQuotas.filter((q) => q.status === 'pagado');
-      
-      const totalPagadoFromQuotas = allQuotas
-        .filter((q) => q.status === 'pagado')
-        .reduce((sum, q) => sum + (q.value || 0), 0);
-
-      // Use the larger of: paid quotas total OR RECAUDADO SIIGO total.
-      // Since the import marks quotas as 'pagado' based on RECAUDADO SIIGO data,
-      // these should be equivalent. We use Math.max to account for any SIIGO 
-      // remainder that didn't fully cover a quota (partial payment case).
-      const totalRecaudadoSiigo = (contract.recaudadoSiigo2024 || 0) + 
-                                  (contract.recaudadoSiigo2025 || 0);
-      const totalPagado = Math.max(totalPagadoFromQuotas, totalRecaudadoSiigo);
-
-      // Value breakdown
-      const valorTotalInicial = initialQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-      const valorPagadoInicial = paidInitial.reduce((sum, q) => sum + (q.value || 0), 0);
-      const valorTotalCuotas = normalQuotas.reduce((sum, q) => sum + (q.value || 0), 0);
-      const valorPagadoCuotas = paidNormal.reduce((sum, q) => sum + (q.value || 0), 0);
+      // Same numbers as the PDF, the portal and the messages
+      const { quotas: _summaryQuotas, ...statement } = buildStatementSummary(contract, allQuotas, { apiUrl });
+      const { initial, normal } = statement.breakdown;
 
       return {
         ...contract.toObject(),
-        initialQuotaPercentage: contract.initialQuotaPercentage || (contract.totalValue > 0 ? (valorTotalInicial / contract.totalValue) * 100 : 0),
-        totalPagado,
-        valorTotalInicial,
-        valorPagadoInicial,
-        valorTotalCuotas,
-        valorPagadoCuotas,
+        initialQuotaPercentage: contract.initialQuotaPercentage || (contract.totalValue > 0 ? (initial.total / contract.totalValue) * 100 : 0),
+        totalPagado: statement.totalPaid,
+        valorTotalInicial: initial.total,
+        valorPagadoInicial: initial.paid,
+        valorTotalCuotas: normal.total,
+        valorPagadoCuotas: normal.paid,
         // Detailed counts
-        cuotasInicialesPagadas: paidInitial.length,
-        totalCuotasIniciales: initialQuotas.length,
-        cuotasNormalesPagadas: paidNormal.length,
-        totalCuotasNormales: contract.installmentsCount || normalQuotas.length,
+        cuotasInicialesPagadas: initial.paidCount,
+        totalCuotasIniciales: initial.count,
+        cuotasNormalesPagadas: normal.paidCount,
+        totalCuotasNormales: contract.installmentsCount || normal.count,
         // Legacy compatibility
-        cuotasPagadas: paidNormal.length,
-        totalCuotas: contract.installmentsCount || normalQuotas.length || 0,
+        cuotasPagadas: normal.paidCount,
+        totalCuotas: contract.installmentsCount || normal.count || 0,
         valorCuota: contract.installmentValue || 0,
-        diasMora: 0, 
+        diasMora: statement.daysOverdue,
         status: 'ACTIVO',
-        statementUrl: publicLinkUrl('statement', contract._id, apiUrl),
+        statement,
+        statementUrl: statement.statementUrl,
         quotas: allQuotas.map((q) => ({ ...q.toObject(), receiptUrl: publicLinkUrl('receipt', q._id, apiUrl) })),
       };
     }));
@@ -424,6 +431,11 @@ router.delete('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_EX
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// Account statement: send it to the registered phone or email, copy its signed link, and its history
+router.post('/statement/:contractId/send', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CONTACT), sendClientStatement);
+router.post('/statement/:contractId/link', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAILS), shareClientStatementLink);
+router.get('/:id/statement-deliveries', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAILS), getClientStatementDeliveries);
 
 // POST /clients/resend-plan/:contractId
 router.post('/resend-plan/:contractId', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAILS), async (req, res) => {

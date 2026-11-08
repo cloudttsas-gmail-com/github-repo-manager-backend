@@ -36,6 +36,9 @@ export const generateStatementStream = async (data, res) => {
     totalPaid,
     totalPending,
     averageRecaudo,
+    overdueCount = 0,
+    overdueAmount = 0,
+    daysOverdue = 0,
     // Breakdown
     valorTotalInicial,
     valorPagadoInicial,
@@ -220,6 +223,13 @@ export const generateStatementStream = async (data, res) => {
 
   currentY += 52;
 
+  if (overdueCount > 0) {
+    const plural = overdueCount === 1 ? 'cuota vencida' : 'cuotas vencidas';
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor('#c62828')
+      .text(`EN MORA: ${overdueCount} ${plural} por ${formatCurrency(overdueAmount)}, ${daysOverdue} ${daysOverdue === 1 ? 'día' : 'días'} de atraso`, 35, currentY, { width: 542 });
+    currentY += 16;
+  }
+
   // ================= 3. FINANCING BREAKDOWN (SIDE-BY-SIDE BLOCKS) =================
   const blockW = 264;
   const blockH = 68;
@@ -344,8 +354,14 @@ export const generateStatementStream = async (data, res) => {
     // Color and text for status
     let statusText = 'PENDIENTE';
     let statusColor = '#6c757d'; // Grey
-    
-    if (q.status === 'pagado') {
+
+    // Labels from the statement summary win, so the PDF says what every other channel says
+    if (q.statusLabel) {
+      statusText = q.statusLabel;
+      if (q.statusLabel === 'PAGADA') statusColor = '#2e7d32';
+      else if (q.statusLabel === 'EN MORA') statusColor = '#c62828';
+      else if (q.statusLabel === 'ABONADA') statusColor = '#ef6c00';
+    } else if (q.status === 'pagado') {
       statusText = 'PAGADA';
       statusColor = '#2e7d32'; // Green
     } else if (q.status === 'mora' || (q.status === 'pendiente' && q.dueDate && new Date(q.dueDate) < new Date())) {
