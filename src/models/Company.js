@@ -83,6 +83,16 @@ const companySchema = new mongoose.Schema({
     enum: ['lotes', 'casas', 'apartamentos', 'locales'],
     default: 'lotes',
   },
+  // Payment plan policy of the project; missing fields use DEFAULT_PAYMENT_PLAN_POLICY
+  paymentPlanPolicy: {
+    initialDeadlineDays: Number,
+    allowedPaymentDays: { type: [Number], default: undefined },
+    minDaysBeforeFirstOrdinary: Number,
+    allowEarlyStart: Boolean,
+    initialQuotaMode: { type: String, enum: ['free', 'fixed'] },
+    allowInitialModeOverride: Boolean,
+    maxOrdinaryQuotas: Number,
+  },
 }, {
   timestamps: true,
 });

@@ -9,6 +9,7 @@ import {
   uploadLotImages,
   getLotsPublic,
   sellLot,
+  previewLotSale,
   getLotSaleDetail,
   reserveLot,
   releaseLot,
@@ -48,6 +49,12 @@ router.post('/:id/sell',
   checkPermission(PERMISSIONS.LOTES_SALE), 
   validate(sellLotValidation), 
   sellLot
+);
+router.post('/:id/sale-preview',
+  companyMiddleware,
+  checkPermission(PERMISSIONS.LOTES_SALE),
+  validate(sellLotValidation),
+  previewLotSale,
 );
 router.post('/:id/reserve', 
   companyMiddleware, 

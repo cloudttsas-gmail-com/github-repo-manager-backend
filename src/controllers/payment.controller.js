@@ -14,6 +14,7 @@ import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
+import { recalculatePlanAfterInitialPayment } from '../services/paymentPlan.service.js';
 
 const migrateLegacyPayments = async (tenantId, companyId) => {
   try {
@@ -413,6 +414,12 @@ export const approvePayment = async (req, res, next) => {
     attempt.approvedAt = new Date();
     await attempt.save();
 
+    // Initial quota fully paid: the ordinary quotas follow its completion date (new plan rules only)
+    const touchedContractIds = await Quota.distinct('contract', { _id: { $in: attempt.quotas.map((q) => q.quotaId) }, tenantId, companyId });
+    for (const contractId of touchedContractIds) {
+      await recalculatePlanAfterInitialPayment({ contractId, tenantId, companyId, req });
+    }
+
     // Evaluate commission milestones (comisiones Fase 3)
     try {
       const { evaluateCommissionMilestones } = await import('../services/commission.service.js');
@@ -716,6 +723,9 @@ export const registerManualPayment = async (req, res, next) => {
     } catch (attemptError) {
       console.error('[LOG][REGISTER_MANUAL_PAYMENT] Error creating PaymentAttempt:', attemptError);
     }
+
+    // Initial quota fully paid: the ordinary quotas follow its completion date (new plan rules only)
+    await recalculatePlanAfterInitialPayment({ contractId: quota.contract, tenantId, companyId, req });
 
     try {
       const { sendConsolidatedPaymentNotifications } = await import('../utils/consolidatedNotifications.js');
@@ -1040,6 +1050,9 @@ export const editPayment = async (req, res, next) => {
     attempt.editedAt = new Date();
     attempt.editReason = reason || 'Ajuste administrativo de monto/datos';
     await attempt.save();
+
+    // Initial quota fully paid: the ordinary quotas follow its completion date (new plan rules only)
+    await recalculatePlanAfterInitialPayment({ contractId: primaryQuota.contract, tenantId, companyId, req });
 
     // 5. Re-evaluate commission milestones in case payment changes milestone status
     try {

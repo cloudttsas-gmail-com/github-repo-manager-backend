@@ -48,7 +48,20 @@ export const sellLotValidation = z.object({
       .max(100, 'El porcentaje de cuota inicial debe estar entre 0 y 100')
       .optional(),
     contractDate: isoDate
-      .optional()
+      .optional(),
+    paymentDay: z.coerce.number({ invalid_type_error: 'El día de pago debe ser un número' })
+      .int()
+      .min(1, 'El día de pago debe estar entre 1 y 31')
+      .max(31, 'El día de pago debe estar entre 1 y 31')
+      .optional(),
+    initialQuotaMode: z.enum(['free', 'fixed'], {
+      invalid_type_error: 'El modo de la cuota inicial debe ser abonos libres o cuotas fijas',
+    }).optional(),
+    initialQuotasCount: z.coerce.number()
+      .int()
+      .min(1, 'El número de cuotas iniciales debe ser al menos 1')
+      .optional(),
+    earlyStart: z.boolean().optional(),
   })
 });
 

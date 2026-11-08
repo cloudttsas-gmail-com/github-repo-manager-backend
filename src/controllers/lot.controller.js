@@ -5,9 +5,12 @@ import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
 import { uploadToR2 } from '../utils/storage.js';
 import { logAudit } from '../utils/auditLogger.js';
-import { roundMoney } from '../utils/math.js';
 import { checkLotExpirations } from '../utils/lotExpiration.js';
 import { buildUnitKey, buildNomenclature, normalizePropertyType } from '../utils/propertyIdentifier.js';
+import AppError from '../utils/AppError.js';
+import { parseBusinessDate } from '../utils/dates.js';
+import { buildSalePlan, PLAN_RULES_VERSION, toCalendarDate, toISODate } from '../services/paymentPlanRules.js';
+import { getPaymentPlanPolicy } from '../services/paymentPlan.service.js';
 
 export const createLot = async (req, res, next) => {
   try {
@@ -591,7 +594,85 @@ export const getLotsPublic = async (req, res, next) => {
 };
 
 /**
- * Marks a lot as sold, creates a contract and generates quotas
+ * Resolves the bonus and the project policy of a sale and builds its payment plan.
+ * Shared by the sale and its preview so the rules live in one place.
+ */
+const buildPlanForSale = async ({ lot, body, tenantId, companyId }) => {
+  const {
+    totalValue,
+    installmentsCount = 0,
+    initialQuotaPercentage = 0,
+    initialQuotasCount = 1,
+    contractDate,
+    separationAmount = 0,
+    paymentDay,
+    initialQuotaMode,
+    earlyStart = false,
+    bonusId,
+  } = body;
+
+  let bonus = null;
+  if (bonusId) {
+    const Bonus = (await import('../models/Bonus.js')).default;
+    let dbBonus = null;
+    try {
+      dbBonus = await Bonus.findOne({ _id: bonusId, tenantId, companyId, isActive: true });
+    } catch (bonusError) {
+      throw new AppError('Error al validar el bono seleccionado', 400);
+    }
+    if (!dbBonus) throw new AppError('El bono seleccionado no es válido o no está activo', 400);
+    bonus = { id: dbBonus._id, name: dbBonus.name, value: dbBonus.value };
+  }
+
+  const baseTotalValue = totalValue || lot.price || 0;
+  const finalTotalValue = baseTotalValue - (bonus?.value || 0);
+  const saleDate = parseBusinessDate(contractDate, new Date());
+  const policy = await getPaymentPlanPolicy({ tenantId, companyId });
+
+  const plan = buildSalePlan({
+    saleDate,
+    totalValue: finalTotalValue,
+    initialQuotaPercentage,
+    separationAmount,
+    installmentsCount,
+    paymentDay,
+    policy,
+    initialQuotaMode,
+    initialQuotasCount,
+    earlyStart,
+    maxInstallments: lot.maxInstallments !== undefined ? lot.maxInstallments : 24,
+  });
+  return { plan, bonus, finalTotalValue, saleDate };
+};
+
+const serializePlan = (plan) => ({
+  ...plan,
+  initialDeadline: plan.initialDeadline ? toISODate(toCalendarDate(plan.initialDeadline)) : null,
+  firstOrdinaryDate: plan.firstOrdinaryDate ? toISODate(toCalendarDate(plan.firstOrdinaryDate)) : null,
+  quotas: plan.quotas.map((q) => ({ ...q, dueDate: toISODate(toCalendarDate(q.dueDate)), paymentDate: undefined })),
+});
+
+/**
+ * Previews the payment plan of a sale under the project policy, without saving anything.
+ */
+export const previewLotSale = async (req, res, next) => {
+  try {
+    const { tenantId, companyId } = req.user;
+    const lot = await Lot.findOne({ _id: req.params.id, tenantId, companyId });
+    if (!lot) return res.status(404).json({ success: false, message: 'Lote no encontrado' });
+
+    const { plan, bonus, finalTotalValue } = await buildPlanForSale({ lot, body: req.body, tenantId, companyId });
+    res.status(200).json({
+      success: true,
+      data: { ...serializePlan(plan), totalValue: finalTotalValue, bonusValue: bonus?.value || 0 },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Marks a lot as sold, creates a contract and generates quotas under the project payment plan policy
  */
 export const sellLot = async (req, res, next) => {
   try {
@@ -600,45 +681,38 @@ export const sellLot = async (req, res, next) => {
     const { 
       clientId, 
       clientData, 
-      totalValue, 
-      installmentsCount = 0, 
       initialQuotaPercentage = 0, 
-      initialQuotasCount = 1, 
-      contractDate,
       startDate,
       negotiation = 'Venta Directa',
       sellerId,
-      bonus = '',
-      bonusValue = 0,
-      separationAmount = 0,
-      initialQuotaDueDate,
-      paymentDay,
     } = req.body;
 
     const isSellerRole = ['vendedor', 'ejecutivo_comercial', 'agent'].includes(role);
     const effectiveSellerId = sellerId || (isSellerRole ? userId : null);
 
-    const lot = await Lot.findById(id);
+    const lot = await Lot.findOne({ _id: id, tenantId, companyId });
     if (!lot) return res.status(404).json({ success: false, message: 'Lote no encontrado' });
 
     if (lot.isDeleted) {
       return res.status(400).json({ success: false, message: 'No se puede vender un lote que ha sido eliminado o archivado' });
-    }
-    
-    // Validate installments count
-    const maxInstallmentsAllowed = lot.maxInstallments !== undefined ? lot.maxInstallments : 24;
-    const installmentsCountParsed = parseInt(installmentsCount) || 0;
-    if (installmentsCountParsed > maxInstallmentsAllowed) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `El número máximo de cuotas permitido para este lote es ${maxInstallmentsAllowed}. No se puede seleccionar ${installmentsCountParsed} cuotas.` 
-      });
     }
 
     // Allow selling if it's available or reserved by the same client/seller
     if (lot.status === 'vendido') {
       return res.status(400).json({ success: false, message: 'Lote ya está vendido' });
     }
+
+    // Validate the plan against the project policy before creating anything
+    let saleContext;
+    try {
+      saleContext = await buildPlanForSale({ lot, body: req.body, tenantId, companyId });
+    } catch (planError) {
+      if (planError.statusCode === 400) {
+        return res.status(400).json({ success: false, message: planError.message });
+      }
+      throw planError;
+    }
+    const { plan, bonus, finalTotalValue, saleDate } = saleContext;
 
     // 1. Get or Create Client
     let client;
@@ -672,38 +746,8 @@ export const sellLot = async (req, res, next) => {
       }
     }
 
-    let bonusValueParsed = 0;
-    let bonusName = '';
-    let bonusIdUsed = null;
-
-    if (req.body.bonusId) {
-      try {
-        const Bonus = (await import('../models/Bonus.js')).default;
-        const dbBonus = await Bonus.findOne({ _id: req.body.bonusId, tenantId, companyId, isActive: true });
-        if (!dbBonus) {
-          return res.status(400).json({ success: false, message: 'El bono seleccionado no es válido o no está activo' });
-        }
-        bonusValueParsed = dbBonus.value;
-        bonusName = dbBonus.name;
-        bonusIdUsed = dbBonus._id;
-      } catch (bonusError) {
-        return res.status(400).json({ success: false, message: 'Error al validar el bono seleccionado' });
-      }
-    }
-
-    const baseTotalValue = totalValue || lot.price || 0;
-    const finalTotalValue = baseTotalValue - bonusValueParsed;
-
-    // 2. Initial Calculations
-    const rawInitialAmountTotal = roundMoney(finalTotalValue * (initialQuotaPercentage / 100));
-    const effectiveSeparationAmount = parseFloat(separationAmount) || 0;
-    const initialAmountTotal = Math.max(0, rawInitialAmountTotal - effectiveSeparationAmount);
-    const residualAmount = roundMoney(finalTotalValue - rawInitialAmountTotal);
-    
-    // We'll calculate installments properly in step 5
-    const installmentValueEstimate = installmentsCountParsed > 0 ? roundMoney(residualAmount / installmentsCountParsed) : 0;
-
-    // 3. Create Contract
+    // 2. Create Contract (sold under the payment plan rules v2)
+    const firstOrdinary = plan.quotas.find((q) => q.type === 'normal');
     const contract = await Contract.create({
       tenantId,
       companyId,
@@ -711,21 +755,30 @@ export const sellLot = async (req, res, next) => {
       lot: lot._id,
       totalValue: finalTotalValue,
       initialQuotaPercentage: parseFloat(initialQuotaPercentage) || 0,
-      initialQuotasCount: parseInt(initialQuotasCount) || 1,
-      installmentsCount: installmentsCountParsed,
-      installmentValue: installmentValueEstimate,
-      contractDate: contractDate || new Date(),
-      startDate: startDate || new Date(),
+      initialQuotasCount: plan.initialQuotasCount,
+      installmentsCount: plan.installmentsCount,
+      installmentValue: plan.installmentValue,
+      contractDate: saleDate,
+      startDate: startDate || firstOrdinary?.dueDate || saleDate,
       negotiation,
       sellerId: effectiveSellerId,
-      bonus: bonusName,
-      bonusId: bonusIdUsed,
-      bonusValue: bonusValueParsed,
-      paymentDay: parseInt(paymentDay) || null,
+      bonus: bonus?.name || '',
+      bonusId: bonus?.id || null,
+      bonusValue: bonus?.value || 0,
+      paymentDay: plan.paymentDay,
       status: 'ACTIVO',
+      planRules: PLAN_RULES_VERSION,
+      planPolicy: {
+        initialDeadlineDays: plan.policy.initialDeadlineDays,
+        minDaysBeforeFirstOrdinary: plan.policy.minDaysBeforeFirstOrdinary,
+        earlyStart: plan.earlyStart,
+        initialQuotaMode: plan.initialQuotaMode,
+      },
+      initialDeadline: plan.initialDeadline,
+      legalStatus: 'sin_firmar',
     });
 
-    // 3.1 Create Commission if the company has an active commission plan
+    // 2.1 Create Commission if the company has an active commission plan
     try {
       const { buildCommissionForContract } = await import('../services/commission.service.js');
       await buildCommissionForContract({ contract, tenantId, companyId });
@@ -734,95 +787,19 @@ export const sellLot = async (req, res, next) => {
     }
 
 
-    // 4. Mark Lot as Sold
+    // 3. Mark Lot as Sold
     lot.status = 'vendido';
     if (effectiveSellerId) lot.sellerId = effectiveSellerId;
     await lot.save();
 
-    // 5. Generate Quotas with precise rounding and proper due dates
-    const quotas = [];
-    const baseContractDate = contractDate ? new Date(contractDate) : new Date();
-    const baseStartDate = startDate ? new Date(startDate) : new Date();
-
-    // Separation Quota: If separationAmount > 0, create it fully paid!
-    if (effectiveSeparationAmount > 0) {
-      quotas.push({
-        tenantId,
-        companyId,
-        contract: contract._id,
-        number: 0,
-        type: 'inicial',
-        value: effectiveSeparationAmount,
-        dueDate: contractDate || new Date(),
-        status: 'pagado',
-        amountPaid: effectiveSeparationAmount,
-        paymentDate: contractDate || new Date(),
-        paymentObservations: 'Abono de separación del lote descontado de la cuota inicial',
-      });
-    }
-
-    // Initial Quotas breakdown
-    let currentInitialSum = 0;
-    const iCount = parseInt(initialQuotasCount) || 1;
-    const baseInitialVal = roundMoney(initialAmountTotal / iCount);
-    const baseInitialDueDate = initialQuotaDueDate ? new Date(initialQuotaDueDate) : new Date(baseContractDate);
-
-    for (let i = 1; i <= iCount; i++) {
-      let val = baseInitialVal;
-      if (i === iCount) {
-        val = roundMoney(initialAmountTotal - currentInitialSum);
-      }
-      currentInitialSum += val;
-
-      const dueDate = new Date(baseInitialDueDate);
-      dueDate.setMonth(dueDate.getMonth() + (i - 1));
-
-      if (val > 0) {
-        quotas.push({
-          tenantId,
-          companyId,
-          contract: contract._id,
-          number: i,
-          type: 'inicial',
-          value: val,
-          dueDate,
-          status: 'pendiente',
-        });
-      }
-    }
-
-    // Regular Quotas breakdown
-    let currentNormalSum = 0;
-    for (let i = 1; i <= installmentsCountParsed; i++) {
-      let val = installmentValueEstimate;
-      if (i === installmentsCountParsed) {
-        val = roundMoney(residualAmount - currentNormalSum);
-      }
-      currentNormalSum += val;
-
-      const dueDate = new Date(baseStartDate);
-      dueDate.setMonth(dueDate.getMonth() + (i - 1));
-      
-      // If paymentDay is specified, force the day of the month safely
-      const effectivePaymentDay = parseInt(paymentDay) || (contract.paymentDay && contract.paymentDay >= 1 && contract.paymentDay <= 31 ? contract.paymentDay : null);
-      if (effectivePaymentDay && effectivePaymentDay >= 1 && effectivePaymentDay <= 31) {
-        const lastDay = new Date(dueDate.getFullYear(), dueDate.getMonth() + 1, 0).getDate();
-        dueDate.setDate(Math.min(effectivePaymentDay, lastDay));
-      }
-
-      if (val > 0) {
-        quotas.push({
-          tenantId,
-          companyId,
-          contract: contract._id,
-          number: i,
-          type: 'normal',
-          value: val,
-          dueDate,
-          status: 'pendiente',
-        });
-      }
-    }
+    // 4. Generate Quotas from the plan (separation, initial and ordinary quotas)
+    const quotas = plan.quotas.map((q) => ({
+      tenantId,
+      companyId,
+      contract: contract._id,
+      ...q,
+      ...(q.number === 0 && { paymentObservations: 'Abono de separación del lote descontado de la cuota inicial' }),
+    }));
 
     if (quotas.length > 0) {
       await Quota.insertMany(quotas);
@@ -844,8 +821,12 @@ export const sellLot = async (req, res, next) => {
       details: { 
         clientId: client._id, 
         totalValue: finalTotalValue, 
-        installments: installmentsCount,
-        contractId: contract._id
+        installments: plan.installmentsCount,
+        contractId: contract._id,
+        paymentDay: plan.paymentDay,
+        initialDeadline: plan.initialDeadline,
+        initialQuotaMode: plan.initialQuotaMode,
+        earlyStart: plan.earlyStart,
       }
     });
 

@@ -1,5 +1,20 @@
 import mongoose from 'mongoose';
 
+// Plan changes and legal states registered on the contract (approvals happen outside Operix)
+const planHistorySchema = new mongoose.Schema({
+  kind: { type: String, enum: ['extension', 'otrosi', 'recalculation', 'legal_status'], required: true },
+  summary: String,
+  changes: mongoose.Schema.Types.Mixed,
+  reason: String,
+  approvedByName: String,
+  approvedAt: Date,
+  documentUrl: String,
+  contractSigned: Boolean,
+  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  recordedByName: String,
+  recordedAt: { type: Date, default: Date.now },
+}, { _id: true });
+
 const contractSchema = new mongoose.Schema({
   tenantId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -49,6 +64,21 @@ const contractSchema = new mongoose.Schema({
   observations: String,
   excelRowId: Number,
   status: { type: String, default: 'ACTIVO' }, // Possible values: FIRMADO, PENDIENTE, DISPONIBLE, etc.
+  // Payment plan rules: 'v2' for contracts sold under the project policy; older contracts have none
+  // and are never recalculated automatically
+  planRules: { type: String },
+  planPolicy: {
+    initialDeadlineDays: Number,
+    minDaysBeforeFirstOrdinary: Number,
+    earlyStart: Boolean,
+    initialQuotaMode: { type: String, enum: ['free', 'fixed'] },
+  },
+  initialDeadline: Date,
+  // Legal state registered by the company; no default so older contracts stay unregistered
+  legalStatus: { type: String, enum: ['sin_firmar', 'firmado', 'con_otrosi'] },
+  signedAt: Date,
+  contractDocumentUrl: String,
+  planHistory: { type: [planHistorySchema], default: undefined },
 }, { timestamps: true });
 
 contractSchema.index({ tenantId: 1, companyId: 1 });

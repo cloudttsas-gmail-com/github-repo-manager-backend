@@ -27,6 +27,8 @@ import reportRoutes from './routes/report.routes.js';
 import auditRoutes from './routes/audit.routes.js';
 import bonusRoutes from './routes/bonus.routes.js';
 import paymentScheduleRoutes from './routes/paymentSchedule.routes.js';
+import paymentPlanRoutes from './routes/paymentPlan.routes.js';
+import contractRoutes from './routes/contract.routes.js';
 import aiAgentToolRoutes from './routes/ai.routes.js';
 import knowledgeRoutes from './routes/knowledge.routes.js';
 import escalationRoutes from './routes/escalation.routes.js';
@@ -184,6 +186,8 @@ app.use('/api/bonuses', bonusRoutes);
 app.use('/api/commission-plans', commissionPlanRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/payment-schedule', paymentScheduleRoutes);
+app.use('/api/payment-plan', paymentPlanRoutes);
+app.use('/api/contracts', contractRoutes);
 
 // 404 handler
 app.use((req, res) => {
