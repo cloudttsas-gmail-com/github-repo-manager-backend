@@ -6,6 +6,7 @@ import User from '../src/models/User.js';
 import Tenant from '../src/models/Tenant.js';
 import Company from '../src/models/Company.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
+import { generateAccessToken } from '../src/utils/jwt.js';
 
 describe('Integration Test - WhatsApp manual send', () => {
   let token = '';
@@ -38,6 +39,22 @@ describe('Integration Test - WhatsApp manual send', () => {
       await User.deleteMany({ accountId: account._id });
       await UserAccount.deleteOne({ _id: account._id });
     }
+  });
+
+  it('the buyer cannot use the company WhatsApp, and only configuration roles connect the number', async () => {
+    const account = await UserAccount.findOne({ email });
+    const admin = await User.findOne({ accountId: account._id });
+    const tokenAs = (role) => generateAccessToken({ accountId: account._id, userId: admin._id, tenantId: admin.tenantId, role });
+
+    const buyer = tokenAs('cliente');
+    for (const [method, path] of [['get', '/api/whatsapp/conversations'], ['get', '/api/whatsapp/history/x'], ['post', '/api/whatsapp/send'], ['post', '/api/whatsapp/disconnect']]) {
+      const res = await request(app)[method](path).set('Authorization', `Bearer ${buyer}`).send({});
+      expect(res.statusCode).toBe(403);
+    }
+
+    const seller = tokenAs('vendedor');
+    expect((await request(app).post('/api/whatsapp/disconnect').set('Authorization', `Bearer ${seller}`).send({})).statusCode).toBe(403);
+    expect((await request(app).get('/api/whatsapp/config').set('Authorization', `Bearer ${seller}`)).statusCode).toBe(403);
   });
 
   it('gives the Embedded Signup values without the app secret', async () => {
