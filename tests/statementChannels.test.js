@@ -250,6 +250,13 @@ describe('Account statement in every channel', () => {
       expect(contract.hasEmail).toBe(true);
     });
 
+    it('the contract page uses the same days overdue and quota states', async () => {
+      const res = await request(app).get(`/api/portal/contract/${contractA._id}`).set('Authorization', `Bearer ${portalToken}`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toMatchObject({ totalPagado: 240000, saldo: 260000, diasMora: 40, cuotasEnMora: 2 });
+      expect(res.body.data.planPagos.map((q) => q.status)).toEqual(['PAGADA', 'VENCIDA', 'VENCIDA', 'PENDIENTE']);
+    });
+
     it('downloads the Excel of an own contract only', async () => {
       const own = await request(app).get(`/api/portal/statement/${contractA._id}/excel`).set('Authorization', `Bearer ${portalToken}`);
       expect(own.statusCode).toBe(200);
