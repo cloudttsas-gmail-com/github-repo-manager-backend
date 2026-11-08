@@ -553,7 +553,15 @@ export const registerManualPayment = async (req, res, next) => {
 
     // Validate everything that can fail before any quota changes, and claim the
     // form's operation id so a double click cannot record the payment twice
-    const bankChoice = await resolveBankChoice(companyId, { bankAccountId, bank: bank || 'Efectivo' });
+    // Only cash or an account cross may come without a bank; a transfer without one
+    // used to be recorded as cash
+    const isCash = paymentMethod === 'Efectivo' || String(bank || '').toUpperCase() === 'EFECTIVO';
+    const isCross = paymentMethod === 'Cruce de cuentas' || bank === 'Cruce de cuentas';
+    if (!bank && !bankAccountId && !isCash && !isCross) {
+      return next(new AppError('Indica el banco o la cuenta a la que llegó el pago', 400));
+    }
+    const fallbackBank = isCash ? 'Efectivo' : 'Cruce de cuentas';
+    const bankChoice = await resolveBankChoice(companyId, { bankAccountId, bank: bank || fallbackBank });
     releaseRequest = await claimPaymentRequest(`manual:${companyId}`, requestId);
 
     console.log('[LOG][REGISTER_MANUAL_PAYMENT] Cuota inicial encontrada para registrar pago:', {

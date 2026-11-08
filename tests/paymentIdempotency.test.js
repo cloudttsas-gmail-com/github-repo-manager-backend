@@ -94,6 +94,20 @@ describe('Payments cannot be recorded twice', () => {
     expect(await PaymentAttempt.countDocuments({ 'quotas.quotaId': quota._id })).toBe(1);
   });
 
+  it('a manual transfer without a bank is rejected instead of being recorded as cash', async () => {
+    const res = await request(app).post(`/api/payments/manual?companyId=${owner.companyId}`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .field('quotaId', quota._id.toString()).field('amount', '100000')
+      .field('paymentMethod', 'Transferencia bancaria').field('requestId', `no-bank-${stamp}`);
+    expect(res.statusCode).toBe(400);
+    expect((await Quota.findById(quota._id)).amountPaid || 0).toBe(0);
+    const cash = await request(app).post(`/api/payments/manual?companyId=${owner.companyId}`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .field('quotaId', quota._id.toString()).field('amount', '100000')
+      .field('paymentMethod', 'Efectivo').field('requestId', `cash-${stamp}`);
+    expect(cash.statusCode).toBe(200);
+  });
+
   it('a manual payment to an unknown company account is rejected before touching the quota', async () => {
     const res = await request(app).post(`/api/payments/manual?companyId=${owner.companyId}`)
       .set('Authorization', `Bearer ${owner.token}`)
