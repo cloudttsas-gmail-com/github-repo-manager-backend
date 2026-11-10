@@ -70,7 +70,7 @@ router.post('/apply', checkPermission(PERMISSIONS.CLIENTES_EDIT || 'CLIENTES_EDI
     return res.json({ success: true, message: result.message });
   } catch (error) {
     console.error('[PAYMENT_SCHEDULE] Error applying adjustment:', error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
 });
 
@@ -135,7 +135,7 @@ router.post('/generate', checkPermission(PERMISSIONS.CLIENTES_EDIT || 'CLIENTES_
     return res.json({ success: true, message: result.message, data: result });
   } catch (error) {
     console.error('[PAYMENT_SCHEDULE] Error generating schedule:', error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
 });
 

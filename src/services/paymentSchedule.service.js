@@ -1,6 +1,61 @@
 import mongoose from 'mongoose';
 import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
+import PaymentAttempt from '../models/PaymentAttempt.js';
+import AppError from '../utils/AppError.js';
+
+const MAX_QUOTAS = 600;
+
+const isQuotaCount = (val, min) => Number.isInteger(Number(val)) && Number(val) >= min && Number(val) <= MAX_QUOTAS;
+const isAmount = (val, { positive }) => val !== null && val !== '' && typeof val !== 'boolean'
+  && Number.isFinite(Number(val)) && (positive ? Number(val) > 0 : Number(val) >= 0);
+const isDate = (val) => !Number.isNaN(new Date(val).getTime());
+
+/**
+ * Checks a restructured plan before saving it: every quota belongs to the contract, values are
+ * numbers that never go below what a quota already received, and the plan adds up to the contract value.
+ */
+const validateAdjustment = (contract, existingQuotas, updatedQuotas) => {
+  if (updatedQuotas.length === 0) throw new AppError('El plan no tiene cuotas', 400);
+
+  const byId = new Map(existingQuotas.map((q) => [q._id.toString(), q]));
+  const finalValues = new Map(existingQuotas.map((q) => [q._id.toString(), q.value || 0]));
+  const taken = new Set(existingQuotas.map((q) => `${q.type}-${q.number}`));
+  let newTotal = 0;
+
+  for (const qData of updatedQuotas) {
+    const label = `la cuota #${qData.number ?? '?'}`;
+    if (!isAmount(qData.value, { positive: false })) throw new AppError(`El valor de ${label} no es válido`, 400);
+    if (qData.dueDate && !isDate(qData.dueDate)) throw new AppError(`La fecha de ${label} no es válida`, 400);
+    const value = Number(qData.value);
+
+    if (qData._id) {
+      const existing = byId.get(String(qData._id));
+      if (!existing) throw new AppError(`${label[0].toUpperCase()}${label.slice(1)} no pertenece a este contrato`, 400);
+      // A paid quota keeps its value (it is never changed below)
+      if (existing.status === 'pagado') continue;
+      if (value < (existing.amountPaid || 0)) {
+        throw new AppError(`El valor de ${label} no puede ser menor que lo que ya se abonó a ella`, 400);
+      }
+      finalValues.set(existing._id.toString(), value);
+    } else {
+      const type = qData.type || 'normal';
+      if (!['inicial', 'normal'].includes(type) || !Number.isInteger(Number(qData.number)) || Number(qData.number) < 1) {
+        throw new AppError('Una cuota nueva no tiene un número o tipo válido', 400);
+      }
+      if (!qData.dueDate) throw new AppError(`Falta la fecha de ${label}`, 400);
+      if (taken.has(`${type}-${Number(qData.number)}`)) throw new AppError(`${label[0].toUpperCase()}${label.slice(1)} ya existe en el contrato`, 400);
+      taken.add(`${type}-${Number(qData.number)}`);
+      newTotal += value;
+    }
+  }
+
+  const planTotal = [...finalValues.values()].reduce((acc, v) => acc + v, 0) + newTotal;
+  const difference = planTotal - (contract.totalValue || 0);
+  if (Math.abs(difference) >= 1) {
+    throw new AppError(`El plan suma $${planTotal.toLocaleString('es-CO')} y el contrato vale $${(contract.totalValue || 0).toLocaleString('es-CO')}: ajuste las cuotas hasta que cuadre`, 400);
+  }
+};
 
 /**
  * Simulates schedule adjustment without modifying the database.
@@ -143,21 +198,22 @@ export async function applyScheduleAdjustment({ contractId, tenantId, companyId,
   try {
     const contract = await Contract.findOne({ _id: contractId, tenantId, companyId }).session(session);
     if (!contract) {
-      throw new Error('Contrato no encontrado');
+      throw new AppError('Contrato no encontrado', 404);
     }
 
-    let grandTotal = 0;
-    for (const qData of updatedQuotas) {
-      grandTotal += Number(qData.value || 0);
+    const existingQuotas = await Quota.find({ contract: contract._id, tenantId, companyId }).session(session);
+    validateAdjustment(contract, existingQuotas, updatedQuotas);
+    const byId = new Map(existingQuotas.map((q) => [q._id.toString(), q]));
 
+    for (const qData of updatedQuotas) {
       if (qData._id) {
-        const existing = await Quota.findOne({ _id: qData._id, tenantId, companyId }).session(session);
-        if (existing) {
-          if (existing.status !== 'pagado') {
-            existing.value = qData.value;
-            if (qData.dueDate) existing.dueDate = new Date(qData.dueDate);
-            await existing.save({ session });
-          }
+        const existing = byId.get(String(qData._id));
+        if (existing.status !== 'pagado') {
+          existing.value = Number(qData.value);
+          if (qData.dueDate) existing.dueDate = new Date(qData.dueDate);
+          // Lowering a partially paid quota to what it already received settles it
+          if (existing.amountPaid > 0 && existing.amountPaid >= existing.value) existing.status = 'pagado';
+          await existing.save({ session });
         }
       } else {
         await Quota.create([{
@@ -166,7 +222,7 @@ export async function applyScheduleAdjustment({ contractId, tenantId, companyId,
           contract: contractId,
           number: qData.number,
           type: qData.type || 'normal',
-          value: qData.value,
+          value: Number(qData.value),
           dueDate: new Date(qData.dueDate),
           status: 'pendiente'
         }], { session });
@@ -223,32 +279,54 @@ export async function generateContractSchedule({
   try {
     const contract = await Contract.findOne({ _id: contractId, tenantId, companyId }).session(session);
     if (!contract) {
-      throw new Error('Contrato no encontrado');
+      throw new AppError('Contrato no encontrado', 404);
+    }
+
+    if (!isAmount(totalValue, { positive: true })) {
+      throw new AppError('El valor total del contrato debe ser un número mayor a 0', 400);
+    }
+    if (!isQuotaCount(installmentsCount, 1)) {
+      throw new AppError(`El número de cuotas debe ser un número entero entre 1 y ${MAX_QUOTAS}`, 400);
+    }
+    if (!isAmount(installmentValue, { positive: true })) {
+      throw new AppError('El valor de la cuota debe ser un número mayor a 0', 400);
+    }
+    if (!isQuotaCount(initialQuotasCount || 0, 0) || !isAmount(initialQuotaValue || 0, { positive: false })) {
+      throw new AppError('La cantidad y el valor de las cuotas iniciales deben ser números válidos', 400);
+    }
+    if (balloonInterval && (!isQuotaCount(balloonInterval, 1) || !isAmount(balloonValue, { positive: true }))) {
+      throw new AppError('La periodicidad y el valor de las cuotas extraordinarias deben ser números válidos', 400);
+    }
+    if (paymentDay && !(Number.isInteger(Number(paymentDay)) && Number(paymentDay) >= 1 && Number(paymentDay) <= 31)) {
+      throw new AppError('El día de pago debe estar entre 1 y 31', 400);
+    }
+    if (startDate && !isDate(startDate)) {
+      throw new AppError('La fecha de inicio no es válida', 400);
     }
 
     const parsedTotalValue = Number(totalValue);
     const parsedInstallmentsCount = Number(installmentsCount);
     const parsedInstallmentValue = Number(installmentValue);
-
-    if (!parsedTotalValue || parsedTotalValue <= 0) {
-      throw new Error('El valor total del contrato debe ser mayor a 0');
-    }
-    if (!parsedInstallmentsCount || parsedInstallmentsCount <= 0) {
-      throw new Error('El número de cuotas debe ser mayor a 0');
-    }
+    initialQuotasCount = Number(initialQuotasCount || 0);
+    initialQuotaValue = Number(initialQuotaValue || 0);
 
     // Existing quotas
     const existingQuotas = await Quota.find({ contract: contractId, tenantId, companyId }).session(session);
     const paidOrPartialQuotas = existingQuotas.filter(q => q.status === 'pagado' || (q.amountPaid && q.amountPaid > 0));
 
-    if (!preserveExistingPayments || paidOrPartialQuotas.length === 0) {
-      // Remove all existing quotas
-      await Quota.deleteMany({ contract: contractId, tenantId, companyId }).session(session);
-    } else {
-      // Remove only unpaid/un-credited pending/mora quotas
-      const paidIds = paidOrPartialQuotas.map(q => q._id);
-      await Quota.deleteMany({ contract: contractId, tenantId, companyId, _id: { $nin: paidIds } }).session(session);
+    // Quotas with money are never deleted: their payments and receipts point to them
+    if (preserveExistingPayments === false && paidOrPartialQuotas.length > 0) {
+      throw new AppError('Este contrato tiene cuotas con pagos: el plan nuevo las conserva y solo reemplaza las cuotas sin abonos', 400);
     }
+    // A reported payment waiting for approval points to a quota that would be deleted
+    const pendingReport = await PaymentAttempt.exists({ contractId: contract._id, tenantId, companyId, status: 'PENDIENTE' }).session(session);
+    if (pendingReport) {
+      throw new AppError('Este contrato tiene pagos reportados sin revisar: apruébelos o recháselos antes de generar el plan', 400);
+    }
+
+    // Remove only the quotas without payments
+    const paidIds = paidOrPartialQuotas.map(q => q._id);
+    await Quota.deleteMany({ contract: contractId, tenantId, companyId, _id: { $nin: paidIds } }).session(session);
 
     const baseStartDate = startDate ? new Date(startDate) : (contract.startDate || new Date());
     const quotasToInsert = [];
