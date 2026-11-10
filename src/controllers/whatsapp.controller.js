@@ -8,6 +8,22 @@ import { GRAPH_API_URL, GRAPH_API_VERSION } from '../config/meta.js';
 import crypto from 'crypto';
 
 /**
+ * The active project (`?companyId=`, checked by companyMiddleware) owns the WhatsApp number:
+ * a tenant with several projects has one number per project.
+ */
+const activeCompany = (req) => Company.findOne({ _id: req.user.companyId, tenantId: req.user.tenantId });
+
+const waConfigFor = (company) => (company?.integrations?.whatsappConnectedAt ? {
+  accessToken: company.integrations.whatsappAccessToken,
+  phoneNumberId: company.integrations.whatsappPhoneId,
+  wabaId: company.integrations.whatsappWabaId,
+} : {
+  accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
+  phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
+  wabaId: process.env.WHATSAPP_WABA_ID,
+});
+
+/**
  * Meta Webhook Verification
  * Answers the challenge as plain text when the verify token matches. Never logs the tokens.
  */
@@ -106,6 +122,7 @@ const processWebhookEvent = async (body) => {
     const last10Digits = waId.slice(-10);
     const client = await Client.findOne({
       tenantId,
+      companyId: company._id,
       phone: { $regex: last10Digits },
     });
     if (!client) {
@@ -117,6 +134,7 @@ const processWebhookEvent = async (body) => {
     if (!conv) {
       conv = await Conversation.create({
         tenantId: client.tenantId,
+        companyId: company._id,
         clientId: client._id,
         waId: waId,
         lastMessage: text,
@@ -160,13 +178,13 @@ export const sendMessage = async (req, res, next) => {
     }
 
     const { clientId, phone: directPhone, text, templateName, components, language } = req.body;
-    const { tenantId, _id: senderId } = req.user;
+    const { tenantId, companyId, userId: senderId } = req.user;
 
     let client = null;
     let phone = directPhone;
 
     if (clientId) {
-      client = await Client.findById(clientId);
+      client = await Client.findOne({ _id: clientId, tenantId, companyId });
       if (!client) return next(new AppError('Cliente no encontrado', 404));
       phone = client.whatsapp || client.phone;
     }
@@ -176,19 +194,10 @@ export const sendMessage = async (req, res, next) => {
     // If no client provided but we have phone, try to find one
     if (!client) {
       const last10Digits = phone.toString().slice(-10);
-      client = await Client.findOne({ phone: { $regex: last10Digits } });
+      client = await Client.findOne({ tenantId, companyId, phone: { $regex: last10Digits } });
     }
 
-    const company = await Company.findOne({ tenantId });
-    const waConfig = company?.integrations?.whatsappConnectedAt ? {
-      accessToken: company.integrations.whatsappAccessToken,
-      phoneNumberId: company.integrations.whatsappPhoneId,
-      wabaId: company.integrations.whatsappWabaId
-    } : {
-      accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-      wabaId: process.env.WHATSAPP_WABA_ID
-    };
+    const waConfig = waConfigFor(await activeCompany(req));
 
     let result;
     if (templateName) {
@@ -205,6 +214,7 @@ export const sendMessage = async (req, res, next) => {
     if (!conv) {
       conv = await Conversation.create({
         tenantId,
+        companyId,
         clientId: client?._id,
         waId: waId,
         lastMessage: text || `Plantilla: ${templateName}`
@@ -214,6 +224,7 @@ export const sendMessage = async (req, res, next) => {
       if (!conv.clientId && client?._id) {
         conv.clientId = client._id;
       }
+      if (!conv.companyId) conv.companyId = companyId;
       conv.lastMessage = text || `Plantilla: ${templateName}`;
       await conv.save();
     }
@@ -267,10 +278,14 @@ export const getChatHistory = async (req, res, next) => {
  */
 export const getConversations = async (req, res, next) => {
   try {
-    const { tenantId } = req.user;
+    const { tenantId, companyId } = req.user;
 
-    const conversations = await Conversation.find({ tenantId })
-      .populate('clientId', 'fullName email phone whatsapp')
+    // Conversations saved before they carried a project show in every project, as before
+    const conversations = await Conversation.find({
+      tenantId,
+      $or: [{ companyId }, { companyId: { $exists: false } }, { companyId: null }],
+    })
+      .populate('clientId', 'name fullName email phone whatsapp')
       .sort({ updatedAt: -1 });
 
     res.status(200).json({ success: true, data: conversations });
@@ -297,16 +312,7 @@ export const getConfig = async (req, res, next) => {
 
 export const getTemplates = async (req, res, next) => {
   try {
-    const company = await Company.findOne({ tenantId: req.user.tenantId });
-    const waConfig = company?.integrations?.whatsappConnectedAt ? {
-      accessToken: company.integrations.whatsappAccessToken,
-      phoneNumberId: company.integrations.whatsappPhoneId,
-      wabaId: company.integrations.whatsappWabaId
-    } : {
-      accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-      wabaId: process.env.WHATSAPP_WABA_ID
-    };
+    const waConfig = waConfigFor(await activeCompany(req));
     const templates = await whatsappService.getTemplates(waConfig);
     res.status(200).json({ success: true, data: templates });
   } catch (error) {
@@ -318,16 +324,7 @@ export const getTemplates = async (req, res, next) => {
  */
 export const createTemplate = async (req, res, next) => {
   try {
-    const company = await Company.findOne({ tenantId: req.user.tenantId });
-    const waConfig = company?.integrations?.whatsappConnectedAt ? {
-      accessToken: company.integrations.whatsappAccessToken,
-      phoneNumberId: company.integrations.whatsappPhoneId,
-      wabaId: company.integrations.whatsappWabaId
-    } : {
-      accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-      wabaId: process.env.WHATSAPP_WABA_ID
-    };
+    const waConfig = waConfigFor(await activeCompany(req));
     const result = await whatsappService.createTemplate(waConfig, req.body);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -341,16 +338,7 @@ export const createTemplate = async (req, res, next) => {
 export const deleteTemplate = async (req, res, next) => {
   try {
     const { name } = req.params;
-    const company = await Company.findOne({ tenantId: req.user.tenantId });
-    const waConfig = company?.integrations?.whatsappConnectedAt ? {
-      accessToken: company.integrations.whatsappAccessToken,
-      phoneNumberId: company.integrations.whatsappPhoneId,
-      wabaId: company.integrations.whatsappWabaId
-    } : {
-      accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-      wabaId: process.env.WHATSAPP_WABA_ID
-    };
+    const waConfig = waConfigFor(await activeCompany(req));
     const result = await whatsappService.deleteTemplate(waConfig, name);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -361,10 +349,9 @@ export const deleteTemplate = async (req, res, next) => {
 export const connect = async (req, res, next) => {
   try {
     const { code, wabaId: passedWabaId, phoneNumberId: passedPhoneNumberId } = req.body;
-    const { tenantId } = req.user;
     
-    // Determine the company for this tenant
-    const company = await Company.findOne({ tenantId });
+    // The number is connected to the active project
+    const company = await activeCompany(req);
     if (!company) return next(new AppError('Empresa no encontrada', 404));
 
     const appId = process.env.META_APP_ID;
@@ -471,8 +458,7 @@ export const connect = async (req, res, next) => {
 
 export const disconnect = async (req, res, next) => {
   try {
-    const { tenantId } = req.user;
-    const company = await Company.findOne({ tenantId });
+    const company = await activeCompany(req);
     if (!company) return next(new AppError('Empresa no encontrada', 404));
 
     company.integrations = {

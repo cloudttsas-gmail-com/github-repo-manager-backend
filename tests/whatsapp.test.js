@@ -7,6 +7,9 @@ import Tenant from '../src/models/Tenant.js';
 import Company from '../src/models/Company.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import { generateAccessToken } from '../src/utils/jwt.js';
+import Client from '../src/models/Client.js';
+import Conversation from '../src/models/Conversation.js';
+import Message from '../src/models/Message.js';
 
 describe('Integration Test - WhatsApp manual send', () => {
   let token = '';
@@ -120,5 +123,99 @@ describe('Integration Test - WhatsApp manual send', () => {
       spy.mockRestore();
       process.env.ENABLE_NOTIFICATIONS = saved;
     }
+  });
+});
+
+// A tenant with two projects, each with its own number: WhatsApp follows the active project
+describe('WhatsApp uses the active project, never another one or another tenant', () => {
+  const stamp = Date.now();
+  const password = 'Password123';
+  let token;
+  let tenantId;
+  let first;
+  let second;
+  let foreignClient;
+
+  const connected = (n) => ({
+    whatsappConnectedAt: new Date(), whatsappAccessToken: `token-${n}`, whatsappPhoneId: `phone-${n}-${stamp}`, whatsappWabaId: `waba-${n}`,
+  });
+  const as = (req) => req.set('Authorization', `Bearer ${token}`);
+
+  beforeAll(async () => {
+    const res = await request(app).post('/api/auth/register').send({
+      name: 'Admin multi', fullName: 'Admin multi', email: `admin.multi.${stamp}@wa-multi.test`,
+      password, confirmPassword: password, tenantName: `Tenant multi ${stamp}`, companyName: `Project one ${stamp}`,
+    });
+    token = res.body.data.accessToken;
+    tenantId = res.body.data.company.tenantId;
+    first = await Company.findById(res.body.data.company._id);
+    first.integrations = connected('one');
+    await first.save();
+    second = await Company.create({ tenantId, name: `Project two ${stamp}`, slug: `project-two-${stamp}`, integrations: connected('two') });
+
+    const other = await request(app).post('/api/auth/register').send({
+      name: 'Other', fullName: 'Other', email: `other.${stamp}@wa-multi.test`,
+      password, confirmPassword: password, tenantName: `Tenant other ${stamp}`, companyName: `Other ${stamp}`,
+    });
+    foreignClient = await Client.create({
+      tenantId: other.body.data.company.tenantId, companyId: other.body.data.company._id, name: 'Foreign', idNumber: `F${stamp}`, phone: '3009998877',
+    });
+  });
+
+  afterAll(async () => {
+    const accounts = await UserAccount.find({ email: /wa-multi\.test$/ });
+    const memberships = await User.find({ accountId: { $in: accounts.map((a) => a._id) } });
+    const tenants = memberships.map((m) => m.tenantId);
+    await Message.deleteMany({ tenantId: { $in: tenants.map(String) } });
+    await Conversation.deleteMany({ tenantId: { $in: tenants.map(String) } });
+    await Client.deleteMany({ tenantId: { $in: tenants } });
+    await Company.deleteMany({ tenantId: { $in: tenants } });
+    await Tenant.deleteMany({ _id: { $in: tenants } });
+    await User.deleteMany({ accountId: { $in: accounts.map((a) => a._id) } });
+    await UserAccount.deleteMany({ _id: { $in: accounts.map((a) => a._id) } });
+  });
+
+  it('sends from the number of the active project', async () => {
+    const saved = process.env.ENABLE_NOTIFICATIONS;
+    process.env.ENABLE_NOTIFICATIONS = 'true';
+    const spy = jest.spyOn(whatsappService, 'sendTextMessage').mockResolvedValue({ messages: [{ id: `wamid.multi.${stamp}` }] });
+    try {
+      const res = await as(request(app).post(`/api/whatsapp/send?companyId=${second._id}`)).send({ phone: '3001112233', text: 'Hola' });
+      expect(res.statusCode).toBe(200);
+      expect(spy.mock.calls[0][0].phoneNumberId).toBe(`phone-two-${stamp}`);
+    } finally {
+      spy.mockRestore();
+      process.env.ENABLE_NOTIFICATIONS = saved;
+    }
+  });
+
+  it('never sends to or links a client of another tenant', async () => {
+    const saved = process.env.ENABLE_NOTIFICATIONS;
+    process.env.ENABLE_NOTIFICATIONS = 'true';
+    const spy = jest.spyOn(whatsappService, 'sendTextMessage').mockResolvedValue({ messages: [{ id: `wamid.foreign.${stamp}` }] });
+    try {
+      const byId = await as(request(app).post(`/api/whatsapp/send?companyId=${first._id}`)).send({ clientId: foreignClient._id, text: 'Hola' });
+      expect(byId.statusCode).toBe(404);
+      const byPhone = await as(request(app).post(`/api/whatsapp/send?companyId=${first._id}`)).send({ phone: foreignClient.phone, text: 'Hola' });
+      expect(byPhone.statusCode).toBe(200);
+      const conv = await Conversation.findOne({ tenantId: String(tenantId), waId: { $regex: '3009998877$' } });
+      expect(conv.clientId).toBeFalsy();
+    } finally {
+      spy.mockRestore();
+      process.env.ENABLE_NOTIFICATIONS = saved;
+    }
+  });
+
+  it('lists only the conversations of the active project', async () => {
+    const res = await as(request(app).get(`/api/whatsapp/conversations?companyId=${first._id}`));
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.some((c) => c.waId.endsWith('3001112233'))).toBe(false);
+  });
+
+  it('disconnecting only touches the active project', async () => {
+    const res = await as(request(app).post(`/api/whatsapp/disconnect?companyId=${second._id}`)).send({});
+    expect(res.statusCode).toBe(200);
+    expect((await Company.findById(first._id)).integrations.whatsappPhoneId).toBe(`phone-one-${stamp}`);
+    expect((await Company.findById(second._id)).integrations.whatsappPhoneId).toBeFalsy();
   });
 });

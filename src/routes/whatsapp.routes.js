@@ -14,6 +14,7 @@ import {
 } from '../controllers/whatsapp.controller.js';
 import { protect, checkPermission } from '../middleware/auth.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
+import { companyMiddleware } from '../middleware/company.js';
 import { PERMISSIONS } from '../config/permissions.js';
 import AppError from '../utils/AppError.js';
 
@@ -38,14 +39,15 @@ router.use((req, res, next) => (
 const canConfigure = checkPermission(PERMISSIONS.CONFIG_TENANT);
 const canFollowUp = checkPermission(PERMISSIONS.CARTERA_FOLLOWUP);
 
+// Everything but the public signup values acts on the active project (`?companyId=`)
 router.get('/config', canConfigure, getConfig);
-router.post('/connect', canConfigure, connect);
-router.post('/disconnect', canConfigure, disconnect);
-router.get('/conversations', canFollowUp, getConversations);
-router.get('/templates', canFollowUp, getTemplates);
-router.post('/templates', canFollowUp, createTemplate);
-router.delete('/templates/:name', canFollowUp, deleteTemplate);
-router.get('/history/:clientId', canFollowUp, getChatHistory);
-router.post('/send', canFollowUp, sendMessage);
+router.post('/connect', canConfigure, companyMiddleware, connect);
+router.post('/disconnect', canConfigure, companyMiddleware, disconnect);
+router.get('/conversations', canFollowUp, companyMiddleware, getConversations);
+router.get('/templates', canFollowUp, companyMiddleware, getTemplates);
+router.post('/templates', canFollowUp, companyMiddleware, createTemplate);
+router.delete('/templates/:name', canFollowUp, companyMiddleware, deleteTemplate);
+router.get('/history/:clientId', canFollowUp, companyMiddleware, getChatHistory);
+router.post('/send', canFollowUp, companyMiddleware, sendMessage);
 
 export default router;

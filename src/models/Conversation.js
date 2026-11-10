@@ -6,6 +6,12 @@ const conversationSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  // Project whose number holds the chat (missing in conversations saved before projects had their own number)
+  companyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    index: true
+  },
   clientId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Client',
