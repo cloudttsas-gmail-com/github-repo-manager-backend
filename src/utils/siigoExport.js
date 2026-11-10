@@ -1,5 +1,17 @@
 import XLSX from 'xlsx';
 
+const BOGOTA_DATE = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+
+// The separation (initial quota #0) and the initial quotas are told apart from ordinary quota #1
+const quotaLabel = (quota) => {
+  if (quota.type === 'inicial') {
+    return quota.number === 0 ? 'SEPARACION' : `CUOTA INICIAL ${quota.number || 1}`;
+  }
+  return quota.number ? `CUOTA ${quota.number}` : 'CUOTA';
+};
+
 /**
  * Generates an Excel workbook buffer in Siigo import format for approved payments (PaymentAttempt).
  * 
@@ -53,14 +65,12 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
 
   const rows = [headers];
 
+  // MM/DD/YYYY in Bogotá time, whatever the server's time zone
   const formatDate = (date) => {
     if (!date) return '';
     const d = new Date(date);
     if (isNaN(d.getTime())) return '';
-    const day = d.getDate().toString().padStart(2, '0');
-    const month = (d.getMonth() + 1).toString().padStart(2, '0');
-    const year = d.getFullYear();
-    return `${month}/${day}/${year}`; // MM/DD/YYYY format
+    return BOGOTA_DATE.format(d);
   };
 
   // Helper to find bank accounting account
@@ -81,9 +91,12 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
     return match ? match.accountingAccount : defaultCuentaBanco;
   };
 
-  let consecutivoIndex = 1;
+  // One voucher per payment, numbered with its receipt so exports never collide in Siigo;
+  // a payment without a receipt number gets one after the highest receipt of this export
+  let fallbackConsecutivo = paymentAttempts.reduce((max, a) => Math.max(max, Number(a.receiptNumber) || 0), 0);
 
   paymentAttempts.forEach((attempt) => {
+    const consecutivoIndex = Number(attempt.receiptNumber) || ++fallbackConsecutivo;
     const contract = attempt.contractId || {};
     const client = attempt.clientId || contract.client || {};
     const lot = contract.lot || {};
@@ -99,15 +112,21 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
     const cuentaBanco = getBankAccountingAccount(attempt.banco, attempt.bankAccountId);
 
     // If the payment attempt contains multiple quota payments, split them
-    if (attempt.quotas && attempt.quotas.length > 0) {
-      attempt.quotas.forEach((qItem) => {
+    // A cascade entry of 0 only points to the quota the payment was made for; older payments
+    // stored entries without an amount, which stand for the whole payment
+    const withMoney = (attempt.quotas || []).filter((q) => q.amount !== 0);
+    const entries = withMoney.length > 0 ? withMoney : (attempt.quotas || []).slice(0, 1).map((q) => ({ quotaId: q.quotaId, amount: attempt.amount }));
+
+    if (entries.length > 0) {
+      entries.forEach((qItem) => {
         const quotaDoc = qItem.quotaId || {};
         const cuotaNo = quotaDoc.number || 1;
         const quotaAmount = qItem.amount || attempt.amount;
         const fechaVencimiento = quotaDoc.dueDate ? formatDate(quotaDoc.dueDate) : fechaElaboracion;
-        
-        const description = `CUOTA ${cuotaNo} ${propLabel} ${lot.lotNumber || ''}`.trim();
-        const observaciones = `CUOTA ${cuotaNo} ${propLabel} ${lot.lotNumber || ''} ${company.name || ''}`.trim().substring(0, 100);
+
+        const concept = quotaLabel(quotaDoc);
+        const description = `${concept} ${propLabel} ${lot.lotNumber || ''}`.trim();
+        const observaciones = `${concept} ${propLabel} ${lot.lotNumber || ''} ${company.name || ''}`.trim().substring(0, 100);
 
         // Row 1: Portfolio (Account 13) - Credit
         rows.push([
@@ -170,8 +189,6 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
           '', // Base exenta
           ''  // Mes de cierre
         ]);
-
-        consecutivoIndex++;
       });
     } else {
       // Fallback if no quotas subdocument
@@ -239,8 +256,6 @@ export const generateSiigoExcel = (paymentAttempts, config = {}) => {
         '', // Base exenta
         ''  // Mes de cierre
       ]);
-
-      consecutivoIndex++;
     }
   });
 

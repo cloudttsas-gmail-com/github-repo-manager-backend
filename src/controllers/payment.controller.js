@@ -690,15 +690,15 @@ export const exportSiigoExcel = async (req, res, next) => {
       status: 'APROBADO'
     };
 
+    // The range is in Bogotá days: a date-only value covers that whole day in Colombia
+    const dayBound = (value, time) => (/^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T${time}-05:00`) : new Date(value));
     if (startDate || endDate) {
       query.fechaPago = {};
       if (startDate) {
-        query.fechaPago.$gte = new Date(startDate);
+        query.fechaPago.$gte = dayBound(startDate, '00:00:00.000');
       }
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        query.fechaPago.$lte = end;
+        query.fechaPago.$lte = dayBound(endDate, '23:59:59.999');
       }
     }
 
