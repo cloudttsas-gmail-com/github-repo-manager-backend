@@ -149,6 +149,11 @@ export const register = async (req, res, next) => {
   }
 };
 
+const maskPhone = (phone) => {
+  const value = String(phone || '');
+  return value.length > 4 ? '*'.repeat(value.length - 4) + value.slice(-4) : value;
+};
+
 /**
  * POST /auth/login
  * Step 1: Verify credentials.
@@ -224,9 +229,12 @@ export const login = async (req, res, next) => {
     account.lastLogin = new Date();
     await account.save({ validateBeforeSave: false });
 
-    // Check if the user is a client (requires OTP validation)
+    // A buyer signs in with a code sent to their phone. Another company can register a buyer with
+    // the email of someone's team account, so a team membership wins in the panel login and the
+    // buyer flow runs only without one, or when the client portal asks for it
     const clientMembership = activeMemberships.find((m) => m.role === 'cliente');
-    if (clientMembership) {
+    const teamMemberships = activeMemberships.filter((m) => m.role !== 'cliente');
+    if (clientMembership && (teamMemberships.length === 0 || req.body.portal === 'cliente')) {
       const Client = (await import('../models/Client.js')).default;
       const client = await Client.findById(clientMembership.clientId);
       if (!client || !client.phone) {
@@ -253,15 +261,15 @@ export const login = async (req, res, next) => {
         success: true,
         data: {
           requiresOtp: true,
-          phone: client.phone,
+          phone: maskPhone(client.phone),
           otpToken,
         },
       });
     }
 
-    if (activeMemberships.length === 1) {
+    if (teamMemberships.length === 1) {
       // Single membership — generate JWT directly
-      const membership = activeMemberships[0];
+      const membership = teamMemberships[0];
       const payload = await buildTokenPayload(account, membership);
       const accessToken = generateAccessToken(payload);
       const refreshToken = generateRefreshToken(account._id);
@@ -284,7 +292,7 @@ export const login = async (req, res, next) => {
       data: {
         requiresTenantSelection: true,
         selectionToken: generateTenantSelectionToken(account._id),
-        memberships: activeMemberships.map((m) => ({
+        memberships: teamMemberships.map((m) => ({
           userId: m._id,
           tenantId: m.tenantId._id,
           tenantName: m.tenantId.name,
@@ -398,10 +406,12 @@ export const selectTenant = async (req, res, next) => {
       return next(new AppError('Account not found or inactive', 401));
     }
 
+    // A buyer membership never opens without its phone code
     const membership = await User.findOne({
       accountId: account._id,
       tenantId: tenantId,
       status: 'active',
+      role: { $ne: 'cliente' },
     }).populate('tenantId', 'name plan status activeModules subscriptionStart subscriptionEnd');
 
     if (!membership) {
