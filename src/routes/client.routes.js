@@ -21,10 +21,188 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantMiddleware);
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Days in arrears ranges of Cartera, by the oldest overdue quota (same rule as the statement)
+const MORA_RANGES = {
+  MORA_1_15: [1, 15],
+  MORA_16_30: [16, 30],
+  MORA_31_60: [31, 60],
+  MORA_61_90: [61, 90],
+  MORA_90_PLUS: [91, Infinity],
+};
+const inMoraRange = ([min, max]) => ({ $and: [{ $gte: ['$diasMora', min] }, ...(max === Infinity ? [] : [{ $lte: ['$diasMora', max] }])] });
+
+/**
+ * One row per client of the active project (sellers only see their own), with its contracts,
+ * totals, arrears and days in arrears. The list and the counters use the same rows.
+ */
+const buildClientRowsPipeline = async (req, { search = '', behaviorFilter } = {}) => {
+  const { tenantId, companyId, role, userId } = req.user;
+  const today = startOfBogotaDay();
+  let matchQuery = { 
+    tenantId: new mongoose.Types.ObjectId(tenantId), 
+    companyId: new mongoose.Types.ObjectId(companyId), 
+  };
+
+  if (role === 'vendedor' || role === 'ejecutivo_comercial' || role === 'agent') {
+    const sellerClients = await Contract.find({ tenantId, companyId, sellerId: userId }).distinct('client');
+    matchQuery.$or = [
+      { _id: { $in: sellerClients } },
+      { createdBy: new mongoose.Types.ObjectId(userId) },
+    ];
+  }
+  
+  if (search) {
+    const searchFilter = {
+      $or: [
+        { name: { $regex: search, $options: 'i' } },
+        { idNumber: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ],
+    };
+
+    if (matchQuery.$or) {
+      // If we already have a role filter, wrap in $and
+      const roleFilter = { $or: matchQuery.$or };
+      delete matchQuery.$or;
+      matchQuery.$and = [roleFilter, searchFilter];
+    } else {
+      matchQuery.$or = searchFilter.$or;
+    }
+  }
+
+  if (behaviorFilter && behaviorFilter !== 'ALL') {
+    matchQuery.behavior = behaviorFilter;
+  }
+
+  const aggregatePipeline = [
+    { $match: matchQuery },
+    // Join with Contracts
+    {
+      $lookup: {
+        from: 'contracts',
+        localField: '_id',
+        foreignField: 'client',
+        as: 'contracts',
+      },
+    },
+    // Join with Quotas (unwind contracts first to join, then group back)
+    { $unwind: { path: '$contracts', preserveNullAndEmptyArrays: true } },
+    {
+      $lookup: {
+        from: 'quotas',
+        let: { contractId: '$contracts._id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$contract', '$$contractId'] } } },
+        ],
+        as: 'allQuotas',
+      },
+    },
+    {
+      $addFields: {
+        // Overdue and paid follow the statement summary (statementSummary.service.js):
+        // an unpaid balance with a due day before today is overdue, whatever the stored status says
+        'contracts.moraQuotas': {
+          $filter: {
+            input: '$allQuotas',
+            as: 'q',
+            cond: {
+              $and: [
+                { $ne: ['$$q.status', 'pagado'] },
+                { $lt: ['$$q.dueDate', today] },
+                { $gt: [{ $subtract: [{ $ifNull: ['$$q.value', 0] }, { $ifNull: ['$$q.amountPaid', 0] }] }, 0] },
+              ],
+            },
+          },
+        },
+        'contracts.paidAmounts': {
+          $map: {
+            input: '$allQuotas',
+            as: 'q',
+            in: {
+              $cond: [
+                { $eq: ['$$q.status', 'pagado'] },
+                { $cond: [{ $gt: [{ $ifNull: ['$$q.amountPaid', 0] }, 0] }, '$$q.amountPaid', { $ifNull: ['$$q.value', 0] }] },
+                { $ifNull: ['$$q.amountPaid', 0] },
+              ],
+            },
+          },
+        },
+      },
+    },
+    {
+      $addFields: {
+        'contracts.totalPagadoQuotas': { $sum: '$contracts.paidAmounts' },
+        'contracts.hasMora': { $gt: [{ $size: '$contracts.moraQuotas' }, 0] },
+        'contracts.oldestMoraDue': { $min: '$contracts.moraQuotas.dueDate' },
+      },
+    },
+    {
+      $addFields: {
+        'contracts.realPaid': {
+          $max: [
+            '$contracts.totalPagadoQuotas',
+            {
+              $add: [
+                { $ifNull: ['$contracts.recaudadoSiigo2024', 0] },
+                { $ifNull: ['$contracts.recaudadoSiigo2025', 0] },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: '$_id',
+        name: { $first: '$name' },
+        idNumber: { $first: '$idNumber' },
+        phone: { $first: '$phone' },
+        email: { $first: '$email' },
+        address: { $first: '$address' },
+        behavior: { $first: '$behavior' },
+        createdAt: { $first: '$createdAt' },
+        totalValue: { $sum: '$contracts.totalValue' },
+        totalPaid: { $sum: '$contracts.realPaid' },
+        hasMora: { $max: '$contracts.hasMora' },
+        oldestMoraDue: { $min: '$contracts.oldestMoraDue' },
+        contracts: { $push: '$contracts' },
+      },
+    },
+    {
+      $addFields: {
+        totalContracts: {
+          $cond: [
+            { $eq: [{ $arrayElemAt: ['$contracts', 0] }, {}] },
+            0,
+            { $size: '$contracts' },
+          ],
+        },
+        totalPending: { $subtract: ['$totalValue', '$totalPaid'] },
+        porcentajeRecaudo: {
+          $cond: [
+            { $gt: ['$totalValue', 0] },
+            { $multiply: [{ $divide: ['$totalPaid', '$totalValue'] }, 100] },
+            0,
+          ],
+        },
+        diasMora: {
+          $cond: [
+            { $ifNull: ['$oldestMoraDue', false] },
+            { $max: [1, { $ceil: { $divide: [{ $subtract: [today, '$oldestMoraDue'] }, DAY_MS] } }] },
+            0,
+          ],
+        },
+      },
+    },
+  ];
+  return aggregatePipeline;
+};
+
 // Company-scoped: GET /clients?companyId=xxx
 router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), async (req, res) => {
   try {
-    const { tenantId, companyId, role, userId } = req.user;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
@@ -34,6 +212,7 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
     const behaviorFilter = req.query.behavior;
     const moraOnly = req.query.moraOnly === 'true';
     const alDiaOnly = req.query.alDiaOnly === 'true';
+    const moraRange = MORA_RANGES[req.query.moraRange];
 
     // Dynamic sort
     let sortObj = { createdAt: -1 };
@@ -41,156 +220,11 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
       sortObj = { [sortBy]: order === 'asc' ? 1 : -1 };
     }
 
-    let matchQuery = { 
-      tenantId: new mongoose.Types.ObjectId(tenantId), 
-      companyId: new mongoose.Types.ObjectId(companyId), 
-    };
+    const aggregatePipeline = await buildClientRowsPipeline(req, { search, behaviorFilter });
 
-    if (role === 'vendedor' || role === 'ejecutivo_comercial' || role === 'agent') {
-      const sellerClients = await Contract.find({ tenantId, companyId, sellerId: userId }).distinct('client');
-      matchQuery.$or = [
-        { _id: { $in: sellerClients } },
-        { createdBy: new mongoose.Types.ObjectId(userId) },
-      ];
-    }
-    
-    if (search) {
-      const searchFilter = {
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { idNumber: { $regex: search, $options: 'i' } },
-          { phone: { $regex: search, $options: 'i' } },
-        ],
-      };
-
-      if (matchQuery.$or) {
-        // If we already have a role filter, wrap in $and
-        const roleFilter = { $or: matchQuery.$or };
-        delete matchQuery.$or;
-        matchQuery.$and = [roleFilter, searchFilter];
-      } else {
-        matchQuery.$or = searchFilter.$or;
-      }
-    }
-
-    if (behaviorFilter && behaviorFilter !== 'ALL') {
-      matchQuery.behavior = behaviorFilter;
-    }
-
-    const aggregatePipeline = [
-      { $match: matchQuery },
-      // Join with Contracts
-      {
-        $lookup: {
-          from: 'contracts',
-          localField: '_id',
-          foreignField: 'client',
-          as: 'contracts',
-        },
-      },
-      // Join with Quotas (unwind contracts first to join, then group back)
-      { $unwind: { path: '$contracts', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'quotas',
-          let: { contractId: '$contracts._id' },
-          pipeline: [
-            { $match: { $expr: { $eq: ['$contract', '$$contractId'] } } },
-          ],
-          as: 'allQuotas',
-        },
-      },
-      {
-        $addFields: {
-          // Overdue and paid follow the statement summary (statementSummary.service.js):
-          // an unpaid balance with a due day before today is overdue, whatever the stored status says
-          'contracts.moraQuotas': {
-            $filter: {
-              input: '$allQuotas',
-              as: 'q',
-              cond: {
-                $and: [
-                  { $ne: ['$$q.status', 'pagado'] },
-                  { $lt: ['$$q.dueDate', startOfBogotaDay()] },
-                  { $gt: [{ $subtract: [{ $ifNull: ['$$q.value', 0] }, { $ifNull: ['$$q.amountPaid', 0] }] }, 0] },
-                ],
-              },
-            },
-          },
-          'contracts.paidAmounts': {
-            $map: {
-              input: '$allQuotas',
-              as: 'q',
-              in: {
-                $cond: [
-                  { $eq: ['$$q.status', 'pagado'] },
-                  { $cond: [{ $gt: [{ $ifNull: ['$$q.amountPaid', 0] }, 0] }, '$$q.amountPaid', { $ifNull: ['$$q.value', 0] }] },
-                  { $ifNull: ['$$q.amountPaid', 0] },
-                ],
-              },
-            },
-          },
-        },
-      },
-      {
-        $addFields: {
-          'contracts.totalPagadoQuotas': { $sum: '$contracts.paidAmounts' },
-          'contracts.hasMora': { $gt: [{ $size: '$contracts.moraQuotas' }, 0] },
-        },
-      },
-      {
-        $addFields: {
-          'contracts.realPaid': {
-            $max: [
-              '$contracts.totalPagadoQuotas',
-              {
-                $add: [
-                  { $ifNull: ['$contracts.recaudadoSiigo2024', 0] },
-                  { $ifNull: ['$contracts.recaudadoSiigo2025', 0] },
-                ],
-              },
-            ],
-          },
-        },
-      },
-      {
-        $group: {
-          _id: '$_id',
-          name: { $first: '$name' },
-          idNumber: { $first: '$idNumber' },
-          phone: { $first: '$phone' },
-          email: { $first: '$email' },
-          address: { $first: '$address' },
-          behavior: { $first: '$behavior' },
-          createdAt: { $first: '$createdAt' },
-          totalValue: { $sum: '$contracts.totalValue' },
-          totalPaid: { $sum: '$contracts.realPaid' },
-          hasMora: { $max: '$contracts.hasMora' },
-          contracts: { $push: '$contracts' },
-        },
-      },
-      {
-        $addFields: {
-          totalContracts: {
-            $cond: [
-              { $eq: [{ $arrayElemAt: ['$contracts', 0] }, {}] },
-              0,
-              { $size: '$contracts' },
-            ],
-          },
-          totalPending: { $subtract: ['$totalValue', '$totalPaid'] },
-          porcentajeRecaudo: {
-            $cond: [
-              { $gt: ['$totalValue', 0] },
-              { $multiply: [{ $divide: ['$totalPaid', '$totalValue'] }, 100] },
-              0,
-            ],
-          },
-        },
-      },
-    ];
-
-    if (moraOnly) {
+    if (moraRange) {
+      aggregatePipeline.push({ $match: { $expr: inMoraRange(moraRange) } });
+    } else if (moraOnly) {
       aggregatePipeline.push({ $match: { hasMora: true } });
     } else if (alDiaOnly) {
       aggregatePipeline.push({ $match: { totalContracts: { $gt: 0 }, hasMora: false } });
@@ -243,6 +277,42 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
     });
   } catch (error) {
     console.error('Error fetching clients:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /clients/stats?companyId=xxx - Counters of Clientes and Cartera over all the project's clients
+router.get('/stats', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), async (req, res) => {
+  try {
+    const pipeline = await buildClientRowsPipeline(req);
+    const rangeCounts = Object.fromEntries(Object.entries(MORA_RANGES).map(([key, range]) => [
+      key, { $sum: { $cond: [inMoraRange(range), 1, 0] } },
+    ]));
+    pipeline.push({
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        alDia: { $sum: { $cond: [{ $and: [{ $gt: ['$totalContracts', 0] }, { $ne: ['$hasMora', true] }] }, 1, 0] } },
+        enMora: { $sum: { $cond: [{ $eq: ['$hasMora', true] }, 1, 0] } },
+        DISPUESTO: { $sum: { $cond: [{ $eq: ['$behavior', 'DISPUESTO'] }, 1, 0] } },
+        EVASIVO: { $sum: { $cond: [{ $eq: ['$behavior', 'EVASIVO'] }, 1, 0] } },
+        INDECISO: { $sum: { $cond: [{ $eq: ['$behavior', 'INDECISO'] }, 1, 0] } },
+        ...rangeCounts,
+      },
+    });
+    const [row = {}] = await Client.aggregate(pipeline);
+    res.json({
+      success: true,
+      data: {
+        total: row.total || 0,
+        alDia: row.alDia || 0,
+        enMora: row.enMora || 0,
+        behavior: { DISPUESTO: row.DISPUESTO || 0, EVASIVO: row.EVASIVO || 0, INDECISO: row.INDECISO || 0 },
+        moraRanges: Object.fromEntries(Object.keys(MORA_RANGES).map((key) => [key, row[key] || 0])),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching client stats:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

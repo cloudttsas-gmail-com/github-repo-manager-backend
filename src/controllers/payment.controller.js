@@ -59,6 +59,8 @@ export const getPayments = async (req, res, next) => {
       query.contractId = { $in: sellerContracts.map((c) => c._id) };
     }
 
+    const scope = { ...query };
+
     // Map frontend status names to PaymentAttempt status values
     if (status && status !== 'ALL') {
       const statusMap = {
@@ -82,9 +84,16 @@ export const getPayments = async (req, res, next) => {
       }).select('_id');
 
       query.clientId = { $in: matchingClients.map((c) => c._id) };
+      scope.clientId = query.clientId;
     }
 
-    const total = await PaymentAttempt.countDocuments(query);
+    // The Pendientes and Pagados cards count every payment of the search, whatever status is shown
+    const [total, pendingCount, approvedCount, rejectedCount] = await Promise.all([
+      PaymentAttempt.countDocuments(query),
+      PaymentAttempt.countDocuments({ ...scope, status: 'PENDIENTE' }),
+      PaymentAttempt.countDocuments({ ...scope, status: 'APROBADO' }),
+      PaymentAttempt.countDocuments({ ...scope, status: 'RECHAZADO' }),
+    ]);
     const attempts = await PaymentAttempt.find(query)
       .populate({
         path: 'contractId',
@@ -144,6 +153,7 @@ export const getPayments = async (req, res, next) => {
       success: true,
       data: {
         payments: formattedPayments,
+        statusCounts: { PENDIENTE: pendingCount, PAGADO: approvedCount, RECHAZADO: rejectedCount },
         pagination: {
           total,
           page: pageNum,
