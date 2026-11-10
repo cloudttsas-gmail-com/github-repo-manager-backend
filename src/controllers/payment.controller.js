@@ -363,6 +363,29 @@ export const approvePayment = async (req, res, next) => {
   }
 };
 
+// A rejected or edited payment may undo the quota that earned a seller's commission
+const revokeCommissionsAfterRevert = async ({ attempt, tenantId, companyId, entries }) => {
+  try {
+    const { revokeUnmetCommissionMilestones } = await import('../services/commission.service.js');
+    return await revokeUnmetCommissionMilestones({
+      contractId: attempt.contractId,
+      tenantId,
+      companyId,
+      revertedQuotaIds: (entries || []).map((e) => e.quotaId?._id || e.quotaId).filter(Boolean),
+    });
+  } catch (commissionError) {
+    console.error('[LOG][COMMISSIONS] Error revisando comisiones tras revertir un pago:', commissionError);
+    return { revoked: [], toReview: [] };
+  }
+};
+
+const commissionWarning = ({ revoked, toReview }) => {
+  const parts = [];
+  if (revoked.length) parts.push(`${revoked.length} comisión(es) del asesor volvieron a pendiente porque la cuota ya no está pagada`);
+  if (toReview.length) parts.push(`${toReview.length} comisión(es) ya radicada(s) o aprobada(s) dependen de esta cuota: revíselas en Comisiones`);
+  return parts.length ? `${parts.join('. ')}.` : null;
+};
+
 /**
  * Mark a pending PaymentAttempt as "RECHAZADO" (rejected).
  * A client report was never applied to its quotas, so rejecting it leaves them untouched.
@@ -401,20 +424,29 @@ export const rejectPayment = async (req, res, next) => {
 
     // Only a pending payment created from quotas that already had the money takes it back
     const reverted = isAppliedToQuotas(attempt);
+    let commissions = { revoked: [], toReview: [] };
     if (reverted) {
       await revertAppliedPayment({ entries: attempt.quotas, tenantId, companyId });
+      commissions = await revokeCommissionsAfterRevert({ attempt, tenantId, companyId, entries: attempt.quotas });
     }
 
     await logAudit(req, {
       action: 'REJECT_PAYMENT',
       module: 'PAYMENTS',
       targetId: claimed._id,
-      details: { amount: claimed.amount, rejectedReason: claimed.rejectedReason, revertedQuotas: reverted },
+      details: {
+        amount: claimed.amount,
+        rejectedReason: claimed.rejectedReason,
+        revertedQuotas: reverted,
+        commissionsRevoked: commissions.revoked,
+        commissionsToReview: commissions.toReview,
+      },
     });
 
     res.json({
       success: true,
       message: 'Pago rechazado',
+      data: { commissionWarning: commissionWarning(commissions) },
     });
   } catch (error) {
     next(error);
@@ -735,6 +767,7 @@ export const editPayment = async (req, res, next) => {
     const bankChoice = bankAccountId ? await resolveBankChoice(companyId, { bankAccountId }) : null;
 
     // 1. Take back everything this payment applied, cascade included
+    const previousEntries = attempt.quotas.map((q) => ({ quotaId: q.quotaId, amount: q.amount }));
     await revertAppliedPayment({ entries: attempt.quotas, tenantId, companyId });
 
     // 2. The payment is applied again from the quota it was made for
@@ -792,7 +825,8 @@ export const editPayment = async (req, res, next) => {
     // Initial quota fully paid: the ordinary quotas follow its completion date (new plan rules only)
     await recalculatePlanAfterInitialPayment({ contractId: primaryQuota.contract, tenantId, companyId, req });
 
-    // 5. Re-evaluate commission milestones in case payment changes milestone status
+    // 5. Milestones the lower amount no longer meets go back to pending; new ones are activated
+    const commissions = await revokeCommissionsAfterRevert({ attempt, tenantId, companyId, entries: previousEntries });
     try {
       const { evaluateCommissionMilestones } = await import('../services/commission.service.js');
       await evaluateCommissionMilestones({ contractId: attempt.contractId, tenantId, companyId });
@@ -808,7 +842,9 @@ export const editPayment = async (req, res, next) => {
         oldAmount,
         newAmount,
         reason: attempt.editReason,
-        affectedQuotasCount: newQuotasToRecord.length
+        affectedQuotasCount: newQuotasToRecord.length,
+        commissionsRevoked: commissions.revoked,
+        commissionsToReview: commissions.toReview,
       }
     });
 
@@ -819,7 +855,8 @@ export const editPayment = async (req, res, next) => {
         paymentId: attempt._id,
         newAmount,
         receiptNumber: finalReceiptNumber,
-        affectedQuotas: newQuotasToRecord
+        affectedQuotas: newQuotasToRecord,
+        commissionWarning: commissionWarning(commissions),
       }
     });
   } catch (error) {

@@ -125,6 +125,58 @@ export const evaluateCommissionMilestones = async ({ contractId, tenantId, compa
 };
 
 /**
+ * Takes back commission installments whose milestone a rejected or edited payment no longer meets.
+ * Only milestones tied to the quotas that payment had reached are checked, so contracts with older
+ * or imported data are left as they were.
+ * - AVAILABLE (not filed yet) goes back to PENDING and is activated again when the quota is paid.
+ * - FILED and APPROVED are not changed: they are returned in toReview for someone to decide.
+ * - PAID and REJECTED are never touched.
+ */
+export const revokeUnmetCommissionMilestones = async ({ contractId, tenantId, companyId, revertedQuotaIds = [] }) => {
+  const result = { revoked: [], toReview: [] };
+  if (!revertedQuotaIds.length) return result;
+  const commission = await Commission.findOne({ contractId, tenantId, companyId });
+  if (!commission) return result;
+
+  const quotas = await Quota.find({ contract: contractId, tenantId, companyId });
+  const reverted = new Set(revertedQuotaIds.map((id) => id.toString()));
+  const touched = quotas.filter((q) => reverted.has(q._id.toString()));
+  if (!touched.length) return result;
+
+  const initialQuotas = quotas.filter((q) => q.type === 'inicial');
+  const initialTouched = touched.some((q) => q.type === 'inicial');
+  const initialUnmet = initialTouched && !initialQuotas.every((q) => q.status === 'pagado');
+  const unmetNormalNumbers = new Set(
+    touched.filter((q) => q.type === 'normal' && q.status !== 'pagado').map((q) => q.number),
+  );
+
+  let changed = false;
+  for (const installment of commission.installments) {
+    const unmet = installment.milestoneKey === 'INITIAL_QUOTA'
+      ? initialUnmet
+      : installment.milestoneKey === 'QUOTA_NUMBER' && unmetNormalNumbers.has(installment.quotaNumber);
+    if (!unmet) continue;
+
+    const entry = {
+      milestoneKey: installment.milestoneKey,
+      quotaNumber: installment.quotaNumber,
+      amount: installment.amount,
+      status: installment.status,
+    };
+    if (installment.status === 'AVAILABLE') {
+      installment.status = 'PENDING';
+      changed = true;
+      result.revoked.push(entry);
+    } else if (['FILED', 'APPROVED'].includes(installment.status)) {
+      result.toReview.push(entry);
+    }
+  }
+
+  if (changed) await commission.save();
+  return result;
+};
+
+/**
  * Synchronizes commissions retroactively for all existing contracts with a seller
  * that do not have a commission generated yet or need milestone evaluation.
  */
