@@ -218,4 +218,53 @@ describe('WhatsApp uses the active project, never another one or another tenant'
     expect((await Company.findById(first._id)).integrations.whatsappPhoneId).toBe(`phone-one-${stamp}`);
     expect((await Company.findById(second._id)).integrations.whatsappPhoneId).toBeFalsy();
   });
+
+  // Meta is mocked: the access token skips the code exchange and the ids come from the signup
+  const connectWith = async (mode, registerOk = true) => {
+    const saved = { id: process.env.META_APP_ID, secret: process.env.META_APP_SECRET };
+    process.env.META_APP_ID = 'app-test';
+    process.env.META_APP_SECRET = 'secret-test';
+    const calls = [];
+    const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (url, opts = {}) => {
+      calls.push({ url: String(url), method: opts.method || 'GET', body: opts.body });
+      if (String(url).endsWith('/register') && !registerOk) {
+        return { ok: false, json: async () => ({ error: { message: 'Number already in use' } }) };
+      }
+      return { ok: true, json: async () => ({ success: true, display_phone_number: '+57 300 000 0000', verified_name: 'Proyecto' }) };
+    });
+    try {
+      const res = await as(request(app).post(`/api/whatsapp/connect?companyId=${second._id}`))
+        .send({ code: 'EA-test-token', wabaId: `waba-new-${stamp}`, phoneNumberId: `phone-new-${stamp}`, ...(mode && { mode }) });
+      return { res, register: calls.find((c) => c.url.endsWith(`/phone-new-${stamp}/register`)) };
+    } finally {
+      fetchSpy.mockRestore();
+      process.env.META_APP_ID = saved.id;
+      process.env.META_APP_SECRET = saved.secret;
+    }
+  };
+
+  it('connecting with coexistence (the default) does not register the number again', async () => {
+    const { res, register } = await connectWith(undefined);
+    expect(res.statusCode).toBe(200);
+    expect(register).toBeUndefined();
+    expect((await Company.findById(second._id)).integrations.whatsappConnectionMode).toBe('coexistence');
+  });
+
+  it('connecting a new number registers it on the Cloud API with a PIN that never leaves the server', async () => {
+    const { res, register } = await connectWith('cloud');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(register.body)).toMatchObject({ messaging_product: 'whatsapp', pin: expect.stringMatching(/^\d{6}$/) });
+    const company = await Company.findById(second._id);
+    expect(company.integrations.whatsappConnectionMode).toBe('cloud');
+    expect(company.integrations.whatsappPin).toBe(JSON.parse(register.body).pin);
+    const listed = await as(request(app).get(`/api/companies/${second._id}`));
+    expect(JSON.stringify(listed.body)).not.toContain('whatsappPin');
+  });
+
+  it('a new number that Meta does not register is not saved as connected', async () => {
+    await as(request(app).post(`/api/whatsapp/disconnect?companyId=${second._id}`)).send({});
+    const { res } = await connectWith('cloud', false);
+    expect(res.statusCode).toBe(502);
+    expect((await Company.findById(second._id)).integrations.whatsappPhoneId).toBeFalsy();
+  });
 });

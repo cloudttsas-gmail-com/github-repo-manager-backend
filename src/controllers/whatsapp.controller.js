@@ -349,6 +349,8 @@ export const deleteTemplate = async (req, res, next) => {
 export const connect = async (req, res, next) => {
   try {
     const { code, wabaId: passedWabaId, phoneNumberId: passedPhoneNumberId } = req.body;
+    // Coexistence (the default) keeps the number in the WhatsApp Business app; cloud connects a new number
+    const mode = req.body.mode === 'cloud' ? 'cloud' : 'coexistence';
     
     // The number is connected to the active project
     const company = await activeCompany(req);
@@ -438,6 +440,22 @@ export const connect = async (req, res, next) => {
       await fetch(`${GRAPH_API_URL}/${wabaId}/subscribed_apps`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } });
     } catch(err) {}
 
+    // A new number has to be registered on the Cloud API, with a two-step verification PIN;
+    // a coexistence number is already registered by the WhatsApp Business app
+    let pin;
+    if (mode === 'cloud') {
+      pin = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+      const registerRes = await fetch(`${GRAPH_API_URL}/${phoneNumberId}/register`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+      });
+      const registerData = await registerRes.json().catch(() => ({}));
+      if (!registerRes.ok || registerData.error) {
+        return next(new AppError(`Meta no registró el número: ${registerData.error?.message || 'error desconocido'}`, 502));
+      }
+    }
+
     company.integrations = {
       ...(company.integrations || {}),
       whatsappEnabled: true,
@@ -446,11 +464,13 @@ export const connect = async (req, res, next) => {
       whatsappAccessToken: accessToken,
       whatsappDisplayPhone: displayPhoneNumber,
       whatsappVerifiedName: verifiedName,
+      whatsappConnectionMode: mode,
+      whatsappPin: pin,
       whatsappConnectedAt: new Date(),
     };
     await company.save();
 
-    res.status(200).json({ success: true, data: { wabaId, phoneNumberId, displayPhoneNumber, verifiedName } });
+    res.status(200).json({ success: true, data: { wabaId, phoneNumberId, displayPhoneNumber, verifiedName, mode } });
   } catch (error) {
     next(error);
   }
@@ -469,6 +489,8 @@ export const disconnect = async (req, res, next) => {
       whatsappAccessToken: undefined,
       whatsappDisplayPhone: undefined,
       whatsappVerifiedName: undefined,
+      whatsappConnectionMode: undefined,
+      whatsappPin: undefined,
       whatsappConnectedAt: undefined,
     };
     await company.save();

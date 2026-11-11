@@ -69,6 +69,10 @@ const companySchema = new mongoose.Schema({
     whatsappDisplayPhone: String,
     whatsappVerifiedName: String,
     whatsappConnectedAt: Date,
+    // coexistence: the number keeps working in the WhatsApp Business app; cloud: a number only for the API
+    whatsappConnectionMode: { type: String, enum: ['coexistence', 'cloud'] },
+    // Two-step verification PIN that registered a cloud number
+    whatsappPin: String,
     daptaEnabled: { type: Boolean, default: false },
     daptaApiKey: String,
   },
@@ -102,9 +106,9 @@ companySchema.index({ tenantId: 1, status: 1 });
 // Set only by the Meta connection flow (whatsapp.controller); never sent to clients
 export const WHATSAPP_CONNECTION_FIELDS = [
   'whatsappApiKey', 'whatsappAccessToken', 'whatsappWabaId', 'whatsappPhoneId',
-  'whatsappDisplayPhone', 'whatsappVerifiedName',
+  'whatsappDisplayPhone', 'whatsappVerifiedName', 'whatsappConnectionMode', 'whatsappPin',
 ];
-const SECRET_INTEGRATION_FIELDS = ['whatsappApiKey', 'whatsappAccessToken'];
+const SECRET_INTEGRATION_FIELDS = ['whatsappApiKey', 'whatsappAccessToken', 'whatsappPin'];
 
 // A schema transform (not a toJSON method) also applies when a company is populated into another document
 companySchema.set('toJSON', {
