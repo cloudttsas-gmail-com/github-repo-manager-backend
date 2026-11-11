@@ -50,7 +50,7 @@ router.put('/:id/approve',
 );
 router.put('/:id/edit', 
   companyMiddleware, 
-  checkPermission(PERMISSIONS.PAGOS_APPROVE), 
+  checkPermission(PERMISSIONS.PAGOS_EDIT), 
   editPayment
 );
 router.post('/:id/resend-receipt', 

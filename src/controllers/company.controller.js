@@ -133,8 +133,14 @@ export const createCompany = async (req, res, next) => {
 export const updateCompany = async (req, res, next) => {
   try {
     const { name, rfc, status, nit, address, phone, email, bankInfo, integrations, bankAccounts, logo, projectLogo, propertyType } = req.body;
-    const { tenantId } = req.user;
+    const { tenantId, role, companies = [] } = req.user;
     const companyId = req.params.id;
+
+    // Company and project admins only edit the projects assigned to them, and never switch one off
+    const isOwner = ['superadmin', 'tenant_admin'].includes(role);
+    if (!isOwner && !companies.some((c) => String(c.id) === String(companyId))) {
+      return next(new AppError('Solo puedes configurar los proyectos que tienes asignados', 403));
+    }
 
     const company = await Company.findOne({ _id: companyId, tenantId });
 
@@ -144,7 +150,7 @@ export const updateCompany = async (req, res, next) => {
 
     if (name) company.name = name;
     if (rfc !== undefined) company.rfc = rfc;
-    if (status) company.status = status;
+    if (status && isOwner) company.status = status;
     if (nit !== undefined) company.nit = nit;
     if (address !== undefined) company.address = address;
     if (phone !== undefined) company.phone = phone;

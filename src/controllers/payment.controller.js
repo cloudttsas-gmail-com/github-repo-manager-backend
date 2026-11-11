@@ -750,14 +750,9 @@ export const exportSiigoExcel = async (req, res, next) => {
  */
 export const editPayment = async (req, res, next) => {
   try {
-    const { tenantId, companyId, userId, role } = req.user;
+    const { tenantId, companyId, userId } = req.user;
     const { id: attemptId } = req.params;
     const { amount, bank, bankAccountId, paymentMethod, paymentDate, observations, reason } = req.body;
-
-    const isAdmin = ['superadmin', 'tenant_admin', 'company_admin', 'administrador'].includes(role);
-    if (!isAdmin) {
-      return next(new AppError('No tienes permisos administrativos para editar pagos registrados', 403));
-    }
 
     const attempt = await PaymentAttempt.findOne({ _id: attemptId, tenantId, companyId });
     if (!attempt) {
