@@ -99,7 +99,29 @@ describe('Integration Test - WhatsApp manual send', () => {
     }
   });
 
+  it('a project without its own number cannot send, not even from the Operix number', async () => {
+    const saved = process.env.ENABLE_NOTIFICATIONS;
+    process.env.ENABLE_NOTIFICATIONS = 'true';
+    const spy = jest.spyOn(whatsappService, 'sendTextMessage');
+    try {
+      const res = await request(app)
+        .post('/api/whatsapp/send')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ companyId, phone: '3001234567', text: 'Hola' });
+      expect(res.statusCode).toBe(400);
+      expect(spy).not.toHaveBeenCalled();
+      expect((await request(app).get(`/api/whatsapp/templates?companyId=${companyId}`).set('Authorization', `Bearer ${token}`)).statusCode).toBe(400);
+    } finally {
+      spy.mockRestore();
+      process.env.ENABLE_NOTIFICATIONS = saved;
+    }
+  });
+
   it('sends a template in the requested language, Spanish by default', async () => {
+    await Company.updateOne({ _id: companyId }, {
+      'integrations.whatsappConnectedAt': new Date(), 'integrations.whatsappAccessToken': 'token-lang',
+      'integrations.whatsappPhoneId': `phone-lang-${Date.now()}`, 'integrations.whatsappWabaId': 'waba-lang',
+    });
     const saved = process.env.ENABLE_NOTIFICATIONS;
     process.env.ENABLE_NOTIFICATIONS = 'true';
     const spy = jest.spyOn(whatsappService, 'sendTemplateMessage')

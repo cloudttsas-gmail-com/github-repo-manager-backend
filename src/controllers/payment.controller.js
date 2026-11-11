@@ -6,7 +6,8 @@ import Lot from '../models/Lot.js';
 import PaymentAttempt from '../models/PaymentAttempt.js';
 import { getNextSequence } from '../models/Counter.js';
 import AppError from '../utils/AppError.js';
-import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
+import { sendEmail } from '../utils/notifications.js';
+import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
 import { publicLinkUrl, signReceiptUrl } from '../utils/publicLinks.js';
@@ -191,11 +192,24 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
       await Quota.findByIdAndUpdate(quotaId, { receiptUrl });
     }
     
-    // Send WhatsApp
+    // WhatsApp from the company's number, with the receipt attached
     const clientPhone = fullQuota.contract.client.phone;
     if (clientPhone) {
-      const message = `Cordial saludo ${fullQuota.contract.client.name}, su recibo de la cuota #${fullQuota.number} por $${(fullQuota.amountPaid || fullQuota.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })} de ${company?.name || 'nuestra empresa'}. Ver recibo: ${receiptUrl} | Estado de Cuenta: ${statementUrl}`;
-      await sendWhatsApp(clientPhone, message);
+      await sendCompanyNotice({
+        company,
+        to: clientPhone,
+        notice: 'pago_recibido',
+        values: {
+          clientName: fullQuota.contract.client.name,
+          companyName: company?.name || 'su inmobiliaria',
+          amount: money(fullQuota.amountPaid || fullQuota.value),
+          date: shortDate(fullQuota.paymentDate || new Date()),
+          property: propertyName(fullQuota.contract.lot, company?.propertyType),
+          receiptNumber: fullQuota.receiptNumber,
+          receiptUrl,
+          statementUrl,
+        },
+      });
     }
 
     // Send Email
@@ -349,7 +363,7 @@ export const approvePayment = async (req, res, next) => {
     // Send notifications
     try {
       const { sendConsolidatedPaymentNotifications } = await import('../utils/consolidatedNotifications.js');
-      await sendConsolidatedPaymentNotifications(req, notifyQuotaIds, companyId);
+      await sendConsolidatedPaymentNotifications(req, notifyQuotaIds, companyId, claimed);
     } catch (notificationError) {
       console.error('[LOG][APPROVE_PAYMENT] Error al enviar notificaciones consolidadas:', notificationError);
     }
@@ -555,10 +569,11 @@ export const registerManualPayment = async (req, res, next) => {
     });
 
     // Immediately create the PaymentAttempt as approved
+    let manualAttempt = null;
     try {
       const contract = await Contract.findById(quota.contract);
       const OPTION_TO_TYPE = { minimo: 'MINIMO', total: 'TOTAL', otro: 'OTRO' };
-      await PaymentAttempt.create({
+      manualAttempt = await PaymentAttempt.create({
         tenantId,
         companyId,
         contractId: contract._id,
@@ -588,7 +603,7 @@ export const registerManualPayment = async (req, res, next) => {
 
     try {
       const { sendConsolidatedPaymentNotifications } = await import('../utils/consolidatedNotifications.js');
-      await sendConsolidatedPaymentNotifications(req, paidQuotasAccumulator, companyId);
+      await sendConsolidatedPaymentNotifications(req, paidQuotasAccumulator, companyId, manualAttempt);
     } catch (error) {
       console.error('[LOG][REGISTER_MANUAL_PAYMENT] Error sending consolidated notifications:', error);
     }

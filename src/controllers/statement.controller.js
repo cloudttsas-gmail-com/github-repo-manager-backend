@@ -7,10 +7,11 @@ import StatementDelivery from '../models/StatementDelivery.js';
 import VerificationToken from '../models/VerificationToken.js';
 import AppError from '../utils/AppError.js';
 import { isValidPublicLink } from '../utils/publicLinks.js';
-import { sendWhatsApp, sendEmail } from '../utils/notifications.js';
+import { sendEmail } from '../utils/notifications.js';
+import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { sendStatementWorkbook } from '../utils/statementExcel.js';
-import { statementWhatsAppText, statementEmail } from '../utils/statementMessages.js';
+import { statementEmail } from '../utils/statementMessages.js';
 import { loadStatement, buildStatementSummary, getCompanyOverdueStats } from '../services/statementSummary.service.js';
 
 const SELLER_ROLES = ['vendedor', 'ejecutivo_comercial', 'agent'];
@@ -60,7 +61,22 @@ const deliverStatement = async ({ loaded, channel, source, req }) => {
   if (channel === 'whatsapp') {
     destination = client?.phone;
     if (!destination) throw new AppError('El cliente no tiene un celular registrado', 400);
-    result = await sendWhatsApp(destination, statementWhatsAppText({ client, companyName, summary }));
+    // From the company's number, with the statement PDF attached
+    result = await sendCompanyNotice({
+      company,
+      to: destination,
+      notice: 'estado_cuenta',
+      values: {
+        clientName: client.name,
+        property: propertyName(loaded.contract.lot, company?.propertyType),
+        companyName,
+        date: shortDate(new Date()),
+        paid: money(summary.totalPaid),
+        balance: money(summary.balance),
+        nextDue: summary.nextQuota?.dueDate ? shortDate(summary.nextQuota.dueDate) : '(sin cuotas pendientes)',
+        statementUrl: summary.statementUrl,
+      },
+    });
   } else if (channel === 'email') {
     destination = client?.email;
     if (!destination) throw new AppError('El cliente no tiene un correo registrado', 400);

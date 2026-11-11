@@ -5,6 +5,7 @@ import {
   getChatHistory, 
   getConversations,
   getTemplates,
+  createDefaultTemplates,
   createTemplate,
   deleteTemplate,
   sendMessage,
@@ -42,6 +43,7 @@ const canFollowUp = checkPermission(PERMISSIONS.CARTERA_FOLLOWUP);
 // Everything but the public signup values acts on the active project (`?companyId=`)
 router.get('/config', canConfigure, getConfig);
 router.post('/connect', canConfigure, companyMiddleware, connect);
+router.post('/templates/defaults', canConfigure, companyMiddleware, createDefaultTemplates);
 router.post('/disconnect', canConfigure, companyMiddleware, disconnect);
 router.get('/conversations', canFollowUp, companyMiddleware, getConversations);
 router.get('/templates', canFollowUp, companyMiddleware, getTemplates);

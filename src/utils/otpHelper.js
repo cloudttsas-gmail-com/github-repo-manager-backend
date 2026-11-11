@@ -5,7 +5,8 @@ import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
 import crypto from 'crypto';
 import AppError from './AppError.js';
-import { sendEmail, sendWhatsApp } from './notifications.js';
+import { sendEmail } from './notifications.js';
+import { sendCompanyNotice } from '../services/whatsappTemplates.service.js';
 
 const OTP_WINDOW_MS = 10 * 60 * 1000;
 const MAX_OTPS_PER_WINDOW = 3;
@@ -37,13 +38,12 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
     expiresAt,
   });
 
-  const ACTIONS = {
-    login: ['entrar a tu portal', 'entrar a tu portal de cliente'],
-    statement: ['consultar tu estado de cuenta', 'consultar tu estado de cuenta'],
-    payment: ['reportar tu pago', 'reportar el pago de tu inmueble'],
+  const EMAIL_ACTIONS = {
+    login: 'entrar a tu portal de cliente',
+    statement: 'consultar tu estado de cuenta',
+    payment: 'reportar el pago de tu inmueble',
   };
-  const [action, emailAction] = ACTIONS[purpose] || ACTIONS.payment;
-  const message = `Tu código de seguridad de ${companyName} para ${action} es: ${code}. Es válido por 15 minutos. No lo compartas con nadie.`;
+  const emailAction = EMAIL_ACTIONS[purpose] || EMAIL_ACTIONS.payment;
 
   let result;
   if (type === 'email') {
@@ -61,7 +61,9 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
     `;
     result = await sendEmail(destination, subject, emailHtml);
   } else if (type === 'phone') {
-    result = await sendWhatsApp(destination, message);
+    // From the company's own number, with its approved authentication template
+    const company = await Company.findById(companyId);
+    result = await sendCompanyNotice({ company, to: destination, notice: 'codigo', values: { code } });
   }
 
   // The providers log failures and return { success: false } instead of throwing

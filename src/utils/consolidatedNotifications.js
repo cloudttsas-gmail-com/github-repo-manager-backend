@@ -1,13 +1,15 @@
 import Quota from '../models/Quota.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
-import { sendEmail, sendWhatsApp } from './notifications.js';
+import { sendEmail } from './notifications.js';
+import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { publicLinkUrl, signReceiptUrl } from './publicLinks.js';
 
 /**
- * Send a single consolidated notification when multiple quotas are paid/processed in cascade
+ * Send a single consolidated notification when multiple quotas are paid/processed in cascade.
+ * `attempt` (the payment) gives the receipt of the whole payment; without it, the first quota's.
  */
-export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, companyId) => {
+export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, companyId, attempt = null) => {
   try {
     if (!paidQuotaIds || paidQuotaIds.length === 0) return false;
 
@@ -47,11 +49,23 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
       quotaDetailsList.push(`Cuota #${q.number} (${q.type === 'inicial' ? 'inicial' : 'ordinaria'}): $${(q.amountPaid || q.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`);
     }
 
-    // Send WhatsApp
+    // WhatsApp from the company's number, with the receipt of the whole payment attached
     if (client.phone) {
-      const quotaNumbers = quotas.map(q => `#${q.number}`).join(', ');
-      const message = `Cordial saludo ${client.name}, se ha registrado un pago consolidado por $${totalAmount.toLocaleString('es-CO', { maximumFractionDigits: 0 })} que cubre las cuotas: ${quotaNumbers} de ${companyName}. Estado de Cuenta: ${statementUrl}`;
-      await sendWhatsApp(client.phone, message);
+      await sendCompanyNotice({
+        company,
+        to: client.phone,
+        notice: 'pago_recibido',
+        values: {
+          clientName: client.name,
+          companyName,
+          amount: money(attempt?.amount || totalAmount),
+          date: shortDate(attempt?.fechaPago || firstQuota.paymentDate || new Date()),
+          property: propertyName(contract.lot, company?.propertyType),
+          receiptNumber: attempt?.receiptNumber || firstQuota.receiptNumber,
+          receiptUrl: attempt?._id ? publicLinkUrl('receipt-attempt', attempt._id, apiUrl) : firstQuota.receiptUrl,
+          statementUrl,
+        },
+      });
     }
 
     // Send Consolidated Email

@@ -1,5 +1,6 @@
 /**
- * WhatsApp and email texts of the account statement, built from the summary.
+ * Email text of the account statement, built from the summary (WhatsApp uses the
+ * operix_estado_cuenta template of each company).
  */
 
 const money = (value) => `$${Number(value || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
@@ -29,20 +30,6 @@ const overdueLine = (summary) => {
   const quotas = summary.overdueCount === 1 ? '1 cuota' : `${summary.overdueCount} cuotas`;
   const days = summary.daysOverdue === 1 ? '1 día' : `${summary.daysOverdue} días`;
   return `${quotas} en mora por ${money(summary.overdueAmount)} (${days} de atraso)`;
-};
-
-export const statementWhatsAppText = ({ client, companyName, summary }) => {
-  const lines = [
-    `Hola ${firstName(client)}, este es tu estado de cuenta de ${companyName}${summary.lotLabel !== 'N/A' ? ` (${summary.lotLabel})` : ''}:`,
-    `Valor total: ${money(summary.totalValue)}`,
-    `Pagado: ${money(summary.totalPaid)}`,
-    `Saldo: ${money(summary.balance)}`,
-    `Próxima cuota: ${nextQuotaLine(summary)}`,
-  ];
-  const overdue = overdueLine(summary);
-  if (overdue) lines.push(`En mora: ${overdue}`);
-  lines.push(`Descárgalo en PDF: ${summary.statementUrl}`);
-  return lines.join('\n');
 };
 
 export const statementEmail = ({ client, companyName, summary }) => {

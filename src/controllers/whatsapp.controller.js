@@ -1,4 +1,5 @@
 import { whatsappService } from '../services/whatsapp.service.js';
+import { companyWhatsAppAccount, ensureDefaultTemplates } from '../services/whatsappTemplates.service.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import Client from '../models/Client.js';
@@ -13,15 +14,9 @@ import crypto from 'crypto';
  */
 const activeCompany = (req) => Company.findOne({ _id: req.user.companyId, tenantId: req.user.tenantId });
 
-const waConfigFor = (company) => (company?.integrations?.whatsappConnectedAt ? {
-  accessToken: company.integrations.whatsappAccessToken,
-  phoneNumberId: company.integrations.whatsappPhoneId,
-  wabaId: company.integrations.whatsappWabaId,
-} : {
-  accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-  phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-  wabaId: process.env.WHATSAPP_WABA_ID,
-});
+// Each project sends and keeps its templates in its own WhatsApp account, never in Operix's
+const NOT_CONNECTED = 'Conecta el número de WhatsApp del proyecto en Configuración › Integraciones.';
+const accountOf = async (req) => companyWhatsAppAccount(await activeCompany(req));
 
 /**
  * Meta Webhook Verification
@@ -197,7 +192,8 @@ export const sendMessage = async (req, res, next) => {
       client = await Client.findOne({ tenantId, companyId, phone: { $regex: last10Digits } });
     }
 
-    const waConfig = waConfigFor(await activeCompany(req));
+    const waConfig = await accountOf(req);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
 
     let result;
     if (templateName) {
@@ -312,9 +308,12 @@ export const getConfig = async (req, res, next) => {
 
 export const getTemplates = async (req, res, next) => {
   try {
-    const waConfig = waConfigFor(await activeCompany(req));
+    const waConfig = await accountOf(req);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const templates = await whatsappService.getTemplates(waConfig);
-    res.status(200).json({ success: true, data: templates });
+    // Senders get the approved ones; the templates page asks for all with their status
+    const data = req.query.all === 'true' ? templates : templates.filter((t) => t.status === 'APPROVED');
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -324,7 +323,8 @@ export const getTemplates = async (req, res, next) => {
  */
 export const createTemplate = async (req, res, next) => {
   try {
-    const waConfig = waConfigFor(await activeCompany(req));
+    const waConfig = await accountOf(req);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const result = await whatsappService.createTemplate(waConfig, req.body);
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -338,9 +338,25 @@ export const createTemplate = async (req, res, next) => {
 export const deleteTemplate = async (req, res, next) => {
   try {
     const { name } = req.params;
-    const waConfig = waConfigFor(await activeCompany(req));
+    const waConfig = await accountOf(req);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const result = await whatsappService.deleteTemplate(waConfig, name);
     res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Creates in the project's account the default templates it does not have yet
+ * (for numbers connected before they existed, or after deleting one).
+ */
+export const createDefaultTemplates = async (req, res, next) => {
+  try {
+    const company = await activeCompany(req);
+    if (!companyWhatsAppAccount(company)) return next(new AppError(NOT_CONNECTED, 400));
+    const results = await ensureDefaultTemplates(company);
+    res.status(200).json({ success: true, data: results });
   } catch (error) {
     next(error);
   }
@@ -470,7 +486,16 @@ export const connect = async (req, res, next) => {
     };
     await company.save();
 
-    res.status(200).json({ success: true, data: { wabaId, phoneNumberId, displayPhoneNumber, verifiedName, mode } });
+    // The notices need their templates in the new account; Meta reviews them (up to 24 hours)
+    let templates = [];
+    try {
+      templates = await ensureDefaultTemplates(company);
+    } catch (templateError) {
+      console.error('[WHATSAPP CONNECT] Default templates not created:', templateError.message);
+      templates = [{ result: 'error', error: templateError.message }];
+    }
+
+    res.status(200).json({ success: true, data: { wabaId, phoneNumberId, displayPhoneNumber, verifiedName, mode, templates } });
   } catch (error) {
     next(error);
   }

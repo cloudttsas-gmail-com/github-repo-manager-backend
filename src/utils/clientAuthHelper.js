@@ -2,7 +2,15 @@ import crypto from 'crypto';
 import UserAccount from '../models/UserAccount.js';
 import User from '../models/User.js';
 import Company from '../models/Company.js';
-import { sendEmail, sendWhatsApp } from './notifications.js';
+import Contract from '../models/Contract.js';
+import { sendEmail } from './notifications.js';
+import { sendCompanyNotice, propertyName } from '../services/whatsappTemplates.service.js';
+
+// «el lote 12 de la manzana B» from the buyer's latest contract in the project
+const buyerProperty = async (client, companyId, company) => {
+  const contract = await Contract.findOne({ client: client._id, companyId }).sort({ createdAt: -1 }).populate('lot');
+  return propertyName(contract?.lot, company?.propertyType);
+};
 
 /**
  * Registers a portal user account for a client, generates a validation token,
@@ -181,10 +189,14 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
       await sendEmail(client.email, subject, emailHtml);
     }
 
-    // WhatsApp Notification
+    // WhatsApp from the company's number: the welcome template never carries the password
     if (client.phone) {
-      const smsMessage = `Hola ${client.name}, bienvenido a ${companyName}. Tu portal de cliente está listo. Valida tus datos en: ${validationUrl} ${generatedPin ? `. Tu PIN temporal de acceso es ${generatedPin}` : ''}`;
-      await sendWhatsApp(client.phone, smsMessage);
+      await sendCompanyNotice({
+        company,
+        to: client.phone,
+        notice: 'bienvenida',
+        values: { clientName: client.name, companyName, property: await buyerProperty(client, companyId, company), slug: companySlug },
+      });
     }
 
   } catch (error) {
@@ -333,11 +345,14 @@ export const resendWelcomeNotification = async (client, tenantId, companyId) => 
       console.log(`[CLIENT_AUTH_HELPER] Resent welcome validation email to: ${client.email}`);
     }
 
-    // WhatsApp Notification
+    // WhatsApp from the company's number
     if (client.phone) {
-      const smsMessage = `Hola ${client.name}, recuerda validar tus datos de cliente para ${companyName} en: ${validationUrl}`;
-      await sendWhatsApp(client.phone, smsMessage);
-      console.log(`[CLIENT_AUTH_HELPER] Resent welcome validation WhatsApp to: ${client.phone}`);
+      await sendCompanyNotice({
+        company,
+        to: client.phone,
+        notice: 'validar_datos',
+        values: { clientName: client.name, companyName, property: await buyerProperty(client, companyId, company), validationUrl },
+      });
     }
   } catch (error) {
     console.error('[CLIENT_AUTH_HELPER] Error in resendWelcomeNotification:', error);

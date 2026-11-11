@@ -13,12 +13,13 @@ class WhatsAppService {
   }
 
   /**
-   * Fetch approved message templates from Meta
+   * Fetch every message template of the account with its status, quality and rejection reason
    */
   async getTemplates(config) {
     try {
       const { wabaUrl, accessToken } = this.getGraphUrl(config);
-      const response = await fetch(`${wabaUrl}/message_templates`, {
+      const fields = 'name,language,status,category,rejected_reason,quality_score,components';
+      const response = await fetch(`${wabaUrl}/message_templates?fields=${fields}&limit=200`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
@@ -30,8 +31,7 @@ class WhatsAppService {
         throw new Error(data.error?.message || 'Error fetching WhatsApp templates');
       }
 
-      // Return only approved templates
-      return data.data.filter(t => t.status === 'APPROVED');
+      return data.data || [];
     } catch (error) {
       console.error('WhatsApp Service Error (getTemplates):', error);
       throw error;
