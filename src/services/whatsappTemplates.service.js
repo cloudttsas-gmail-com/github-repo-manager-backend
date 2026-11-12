@@ -147,7 +147,7 @@ export const DEFAULT_TEMPLATES = {
     category: 'UTILITY',
     components: ({ companyName, companyPhone }) => [
       body(
-        'Hola {{1}}, la cuota {{2}} de {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya realizó el pago, por favor repórtelo para registrarlo. Si necesita un acuerdo, puede comunicarse con {{6}}.',
+        'Hola {{1}}, la cuota {{2}} de {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya realizó el pago, por favor repórtelo para registrarlo. Si necesita un acuerdo, puede comunicarse con {{6}} por este mismo chat.',
         [EXAMPLE.client, '5', EXAMPLE.property, EXAMPLE.date, EXAMPLE.money, EXAMPLE.company],
       ),
       footer(companyName),

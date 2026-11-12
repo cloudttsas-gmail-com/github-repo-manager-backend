@@ -43,7 +43,8 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
       const bodyPart = components.find((c) => c.type === 'BODY');
       if (definition.category === 'AUTHENTICATION') continue;
       expect(bodyPart.text.trim().startsWith('{{')).toBe(false);
-      expect(bodyPart.text.trim().endsWith('}}')).toBe(false);
+      // A closing period does not count: Meta still sees the variable at the end
+      expect(bodyPart.text.trim().replace(/[.!?]+$/, '').endsWith('}}')).toBe(false);
       const variables = bodyPart.text.match(/\{\{\d+\}\}/g) || [];
       expect(bodyPart.example.body_text[0]).toHaveLength(new Set(variables).size);
       expect(components.find((c) => c.type === 'FOOTER').text).toBe(connected.name);
