@@ -49,6 +49,14 @@ const footer = (companyName) => ({ type: 'FOOTER', text: String(companyName || '
 const documentHeader = (handle) => ({ type: 'HEADER', format: 'DOCUMENT', example: { header_handle: [handle] } });
 const urlButton = (text, base, exampleSuffix) => ({ type: 'URL', text, url: `${base}{{1}}`, example: [`${base}${exampleSuffix}`] });
 
+/** +57… for the call button; Colombian mobiles (10 digits) and landlines (60X + 7 digits) get the country code. */
+export const internationalPhone = (phone) => {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (/^57\d{10}$/.test(digits)) return `+${digits}`;
+  if (/^3\d{9}$/.test(digits) || /^60\d{8}$/.test(digits)) return `+57${digits}`;
+  return null;
+};
+
 const EXAMPLE = {
   client: 'Laura Gómez',
   company: 'Inmobiliaria Horizonte',
@@ -72,10 +80,10 @@ export const DEFAULT_TEMPLATES = {
   },
   operix_bienvenida: {
     category: 'UTILITY',
+    // Tied to the purchase, without a welcome header or thanks: Meta took that version for marketing
     components: ({ companyName }) => [
-      { type: 'HEADER', format: 'TEXT', text: `Bienvenido a ${companyName}`.slice(0, FOOTER_MAX) },
       body(
-        'Hola {{1}}, gracias por confiar en {{2}} para la compra de {{3}}.\n\nPor este WhatsApp le enviaremos su plan de pagos, los recibos de cada pago y los avisos de sus cuotas. Puede consultar su estado de cuenta cuando quiera con su número de documento y un código que le llegará aquí.',
+        'Hola {{1}}, {{2}} registró la compra de {{3}} a su nombre.\n\nPor este WhatsApp recibirá su plan de pagos, los recibos de cada pago y los avisos de sus cuotas. Puede consultar su estado de cuenta con su número de documento y un código que le llegará aquí.',
         [EXAMPLE.client, EXAMPLE.company, EXAMPLE.property],
       ),
       footer(companyName),
@@ -148,7 +156,7 @@ export const DEFAULT_TEMPLATES = {
         buttons: [
           urlButton('Pagar o reportar un pago', publicPageBase(), 'inmobiliaria-horizonte/payments'),
           // The call button needs a fixed number: only when the project has one
-          ...(companyPhone ? [{ type: 'PHONE_NUMBER', text: 'Llamar a cartera', phone_number: companyPhone }] : []),
+          ...(internationalPhone(companyPhone) ? [{ type: 'PHONE_NUMBER', text: 'Llamar a cartera', phone_number: internationalPhone(companyPhone) }] : []),
         ],
       },
     ],
@@ -183,7 +191,7 @@ export const DEFAULT_TEMPLATES = {
     components: ({ companyName, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, este es su estado de cuenta de {{2}} con {{3}} al {{4}}: ha pagado {{5}} y su saldo es {{6}}.\n\nSu próxima cuota vence el {{7}}.',
+        'Hola {{1}}, este es su estado de cuenta de {{2}} con {{3}} al {{4}}: ha pagado {{5}} y su saldo es {{6}}.\n\nSu próxima cuota vence el {{7}}. En el documento adjunto está el detalle de cada cuota y de cada pago.',
         [EXAMPLE.client, EXAMPLE.property, EXAMPLE.company, EXAMPLE.date, '$9.000.000', '$21.000.000', EXAMPLE.date],
       ),
       footer(companyName),
@@ -239,18 +247,30 @@ export const ensureDefaultTemplates = async (company) => {
   const missing = Object.keys(DEFAULT_TEMPLATES).filter((name) => !byName.has(name));
 
   let handle = null;
-  if (missing.some((name) => DEFAULT_TEMPLATES[name].documentHeader)) {
+  const rejected = Object.keys(DEFAULT_TEMPLATES).filter((name) => byName.get(name)?.status === 'REJECTED');
+  if ([...missing, ...rejected].some((name) => DEFAULT_TEMPLATES[name].documentHeader)) {
     handle = await uploadSampleDocument(account.accessToken);
   }
 
   const context = { companyName: company.name, companyPhone: company.phone, handle };
   const results = [];
   for (const name of Object.keys(DEFAULT_TEMPLATES)) {
-    if (byName.has(name)) {
-      results.push({ name, result: 'existing', status: byName.get(name).status });
+    const definition = DEFAULT_TEMPLATES[name];
+    const current = byName.get(name);
+    if (current?.status === 'REJECTED' && current.id) {
+      // A rejected default gets the current text and goes back to review
+      try {
+        await whatsappService.editTemplate(account, current.id, { category: definition.category, components: definition.components(context) });
+        results.push({ name, result: 'resubmitted', status: 'PENDING' });
+      } catch (error) {
+        results.push({ name, result: 'error', status: 'REJECTED', error: error.message });
+      }
       continue;
     }
-    const definition = DEFAULT_TEMPLATES[name];
+    if (current) {
+      results.push({ name, result: 'existing', status: current.status });
+      continue;
+    }
     try {
       const created = await whatsappService.createTemplate(account, {
         name, language: LANGUAGE, category: definition.category, components: definition.components(context),

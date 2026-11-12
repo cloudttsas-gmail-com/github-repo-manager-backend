@@ -5,7 +5,7 @@ import Client from '../src/models/Client.js';
 import VerificationToken from '../src/models/VerificationToken.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import {
-  DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName,
+  DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
 } from '../src/services/whatsappTemplates.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
@@ -131,6 +131,35 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
       await Client.deleteOne({ _id: client._id });
       await Company.deleteOne({ _id: company._id });
     }
+  });
+
+  it('a rejected default template gets the current text and goes back to review', async () => {
+    const listSpy = jest.spyOn(whatsappService, 'getTemplates').mockResolvedValue(
+      Object.keys(DEFAULT_TEMPLATES).map((name) => ({ id: `id-${name}`, name, language: 'es', status: name === 'operix_bienvenida' ? 'REJECTED' : 'APPROVED' })),
+    );
+    const editSpy = jest.spyOn(whatsappService, 'editTemplate').mockResolvedValue({ success: true });
+    const createSpy = jest.spyOn(whatsappService, 'createTemplate');
+    try {
+      const results = await ensureDefaultTemplates(connected);
+      expect(results.find((r) => r.name === 'operix_bienvenida')).toMatchObject({ result: 'resubmitted', status: 'PENDING' });
+      expect(editSpy).toHaveBeenCalledTimes(1);
+      expect(editSpy.mock.calls[0][1]).toBe('id-operix_bienvenida');
+      expect(editSpy.mock.calls[0][2].components.find((c) => c.type === 'BODY').text).not.toMatch(/gracias|bienvenid/i);
+      expect(createSpy).not.toHaveBeenCalled();
+    } finally {
+      listSpy.mockRestore();
+      editSpy.mockRestore();
+      createSpy.mockRestore();
+    }
+  });
+
+  it('the call button gets the number in international format, or is left out', () => {
+    expect(internationalPhone('3001234567')).toBe('+573001234567');
+    expect(internationalPhone('601 555 1234')).toBe('+576015551234');
+    expect(internationalPhone('+57 300 123 4567')).toBe('+573001234567');
+    expect(internationalPhone('12345')).toBeNull();
+    const buttons = DEFAULT_TEMPLATES.operix_cuota_vencida.components({ companyName: 'X', companyPhone: '12345' }).at(-1).buttons;
+    expect(buttons.map((b) => b.type)).toEqual(['URL']);
   });
 
   it('names the property and cuts the signed link after /api/public/', () => {

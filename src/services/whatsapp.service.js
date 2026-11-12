@@ -18,7 +18,7 @@ class WhatsAppService {
   async getTemplates(config) {
     try {
       const { wabaUrl, accessToken } = this.getGraphUrl(config);
-      const fields = 'name,language,status,category,rejected_reason,quality_score,components';
+      const fields = 'id,name,language,status,category,rejected_reason,quality_score,components';
       const response = await fetch(`${wabaUrl}/message_templates?fields=${fields}&limit=200`, {
         method: 'GET',
         headers: {
@@ -52,7 +52,9 @@ class WhatsAppService {
 
       const result = await response.json();
       if (!response.ok) {
-        throw new Error(result.error?.message || 'Error creating WhatsApp template');
+        // Meta explains the rejection in error_user_msg; message alone says «Invalid parameter»
+        const detail = [result.error?.error_user_title, result.error?.error_user_msg].filter(Boolean).join(': ');
+        throw new Error(detail || result.error?.message || 'Error creating WhatsApp template');
       }
 
       return result;
@@ -60,6 +62,24 @@ class WhatsAppService {
       console.error('WhatsApp Service Error (createTemplate):', error);
       throw error;
     }
+  }
+
+  /**
+   * Edit a template (Meta allows it for rejected, paused or approved ones); it goes back to review
+   */
+  async editTemplate(config, templateId, data) {
+    this.getGraphUrl(config);
+    const response = await fetch(`${GRAPH_API_URL}/${templateId}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const detail = [result.error?.error_user_title, result.error?.error_user_msg].filter(Boolean).join(': ');
+      throw new Error(detail || result.error?.message || 'Error editing WhatsApp template');
+    }
+    return result;
   }
 
   async deleteTemplate(config, name) {
