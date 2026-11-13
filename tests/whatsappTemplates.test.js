@@ -6,7 +6,7 @@ import VerificationToken from '../src/models/VerificationToken.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import {
   DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
-  buildCompanyTemplate, templateFieldsFor,
+  buildCompanyTemplate, templateFieldsFor, prepareHeaderSample,
 } from '../src/services/whatsappTemplates.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
@@ -207,5 +207,45 @@ describe('A company template only carries Operix data as named variables', () =>
     [{ name: 'Con Espacios', body: 'Su cuota vence pronto.' }, /minúsculas/],
   ])('rejects what Meta would reject: %j', (input, message) => {
     expect(() => buildCompanyTemplate(company, input)).toThrow(message);
+  });
+});
+
+describe('A company template can carry an image, a video or a document in its header', () => {
+  const company = { name: 'Inmobiliaria Horizonte' };
+
+  it('uses the sample handle Meta gave for the media header', () => {
+    const t = buildCompanyTemplate(company, {
+      name: 'estado_mensual', body: 'Le compartimos su estado de cuenta del mes. Gracias por estar al día.',
+      headerFormat: 'DOCUMENT', headerHandle: 'h-sample', header: 'ignored text',
+    });
+    expect(t.components[0]).toEqual({ type: 'HEADER', format: 'DOCUMENT', example: { header_handle: ['h-sample'] } });
+  });
+
+  it('a media header without its sample is rejected', () => {
+    expect(() => buildCompanyTemplate(company, { name: 'foto', body: 'Así va la obra de su proyecto este mes.', headerFormat: 'IMAGE' }))
+      .toThrow(/archivo de ejemplo/);
+  });
+
+  it('a document Operix makes per buyer gets a sample PDF; a file must match the chosen format', async () => {
+    const withAccount = { ...connected };
+    const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (url) => (
+      String(url).includes('/uploads?')
+        ? { ok: true, json: async () => ({ id: 'upload:s' }) }
+        : { ok: true, json: async () => ({ h: 'h-pdf' }) }
+    ));
+    const saveFile = jest.fn(async () => 'https://files.test/whatsapp-templates/x.png');
+    try {
+      await withEnv({ META_APP_ID: 'app-test' }, async () => {
+        await expect(prepareHeaderSample(withAccount, { format: 'DOCUMENT', source: 'estado_cuenta' }, { saveFile }))
+          .resolves.toMatchObject({ handle: 'h-pdf', source: 'estado_cuenta', fileName: 'Estado de cuenta.pdf' });
+        expect(saveFile).not.toHaveBeenCalled();
+        const png = { mimetype: 'image/png', size: 1000, buffer: Buffer.from('x'), originalname: 'obra.png' };
+        await expect(prepareHeaderSample(withAccount, { format: 'VIDEO', file: png }, { saveFile })).rejects.toThrow(/no corresponde/);
+        await expect(prepareHeaderSample(withAccount, { format: 'IMAGE', file: png }, { saveFile }))
+          .resolves.toMatchObject({ handle: 'h-pdf', source: 'file', fileUrl: 'https://files.test/whatsapp-templates/x.png' });
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

@@ -8,6 +8,7 @@ import {
   createDefaultTemplates,
   createTemplate,
   getTemplateFields,
+  prepareTemplateHeader,
   deleteTemplate,
   sendMessage,
   connect,
@@ -19,6 +20,7 @@ import { tenantMiddleware } from '../middleware/tenant.js';
 import { companyMiddleware } from '../middleware/company.js';
 import { PERMISSIONS } from '../config/permissions.js';
 import AppError from '../utils/AppError.js';
+import { uploadTemplateMedia } from '../middleware/upload.js';
 
 const router = express.Router();
 
@@ -49,6 +51,7 @@ router.post('/disconnect', canConfigure, companyMiddleware, disconnect);
 router.get('/conversations', canFollowUp, companyMiddleware, getConversations);
 router.get('/templates', canFollowUp, companyMiddleware, getTemplates);
 router.get('/template-fields', canFollowUp, companyMiddleware, getTemplateFields);
+router.post('/templates/header-sample', canFollowUp, companyMiddleware, uploadTemplateMedia.single('file'), prepareTemplateHeader);
 router.post('/templates', canFollowUp, companyMiddleware, createTemplate);
 router.delete('/templates/:name', canFollowUp, companyMiddleware, deleteTemplate);
 router.get('/history/:clientId', canFollowUp, companyMiddleware, getChatHistory);

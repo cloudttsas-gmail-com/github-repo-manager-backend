@@ -214,26 +214,28 @@ const samplePdf = () => new Promise((resolve, reject) => {
 });
 
 /**
- * Uploads the sample PDF with Meta's Resumable Upload API and returns its handle.
+ * Uploads a file with Meta's Resumable Upload API and returns its handle, the sample a
+ * template with a media header is reviewed with.
  */
-const uploadSampleDocument = async (accessToken) => {
+const uploadToMeta = async (accessToken, file, fileType, fileName) => {
   const appId = process.env.META_APP_ID;
-  if (!appId) throw new Error('META_APP_ID es requerido para crear plantillas con documento');
-  const file = await samplePdf();
+  if (!appId) throw new Error('META_APP_ID es requerido para crear plantillas con imagen, video o documento');
   const sessionRes = await fetch(`${GRAPH_API_URL}/${appId}/uploads?${new URLSearchParams({
-    file_name: 'ejemplo.pdf', file_length: String(file.length), file_type: 'application/pdf', access_token: accessToken,
+    file_name: fileName, file_length: String(file.length), file_type: fileType, access_token: accessToken,
   }).toString()}`, { method: 'POST' });
   const session = await sessionRes.json();
-  if (!sessionRes.ok || !session.id) throw new Error(session.error?.message || 'Meta no abrió la carga del documento de ejemplo');
+  if (!sessionRes.ok || !session.id) throw new Error(session.error?.message || 'Meta no abrió la carga del archivo de ejemplo');
   const uploadRes = await fetch(`${GRAPH_API_URL}/${session.id}`, {
     method: 'POST',
     headers: { Authorization: `OAuth ${accessToken}`, file_offset: '0' },
     body: file,
   });
   const uploaded = await uploadRes.json();
-  if (!uploadRes.ok || !uploaded.h) throw new Error(uploaded.error?.message || 'Meta no recibió el documento de ejemplo');
+  if (!uploadRes.ok || !uploaded.h) throw new Error(uploaded.error?.message || 'Meta no recibió el archivo de ejemplo');
   return uploaded.h;
 };
+
+const uploadSampleDocument = async (accessToken) => uploadToMeta(accessToken, await samplePdf(), 'application/pdf', 'ejemplo.pdf');
 
 /**
  * Creates in the company's account the default templates it does not have yet.
@@ -388,6 +390,39 @@ const CUSTOM_CATEGORIES = ['UTILITY', 'MARKETING'];
 const BODY_MAX = 1024;
 const HEADER_MAX = 60;
 
+/** PDFs Operix makes for each buyer, which a document header can attach when sent. */
+export const DOCUMENT_SOURCES = [
+  { key: 'estado_cuenta', label: 'Estado de cuenta del comprador', fileName: 'Estado de cuenta.pdf' },
+  { key: 'plan_pagos', label: 'Plan de pagos del comprador', fileName: 'Plan de pagos.pdf' },
+  { key: 'recibo', label: 'Recibo del último pago', fileName: 'Recibo.pdf' },
+];
+const MEDIA_FORMATS = ['IMAGE', 'VIDEO', 'DOCUMENT'];
+const IMAGE_MAX = 5 * 1024 * 1024;
+
+/**
+ * The sample of a media header, uploaded to Meta for the review. A file the company
+ * uploads also goes to storage, because it is what the template will attach; for a PDF
+ * Operix makes per buyer, Meta gets a sample page.
+ * Returns { format, source, handle, fileUrl?, fileName }.
+ */
+export const prepareHeaderSample = async (company, { format, source, file }, { saveFile }) => {
+  const account = companyWhatsAppAccount(company);
+  if (!account) fail('El proyecto no tiene un número de WhatsApp conectado.');
+  if (!MEDIA_FORMATS.includes(format)) fail('El encabezado debe ser una imagen, un video o un documento.');
+  if (format === 'DOCUMENT' && source && source !== 'file') {
+    const doc = DOCUMENT_SOURCES.find((d) => d.key === source);
+    if (!doc) fail('Ese documento no lo genera Operix.');
+    return { format, source, handle: await uploadSampleDocument(account.accessToken), fileName: doc.fileName };
+  }
+  if (!file) fail('Adjunta el archivo del encabezado.');
+  const kind = { 'image/jpeg': 'IMAGE', 'image/png': 'IMAGE', 'video/mp4': 'VIDEO', 'application/pdf': 'DOCUMENT' }[file.mimetype];
+  if (kind !== format) fail('El archivo no corresponde al tipo de encabezado elegido.');
+  if (format === 'IMAGE' && file.size > IMAGE_MAX) fail('Meta acepta imágenes de hasta 5 MB.');
+  const handle = await uploadToMeta(account.accessToken, file.buffer, file.mimetype, file.originalname || 'archivo');
+  const fileUrl = await saveFile(file);
+  return { format, source: 'file', handle, fileUrl, fileName: file.originalname };
+};
+
 /** The fields with this company's samples (its own name and phone). */
 export const templateFieldsFor = (company) => TEMPLATE_FIELDS.map(({ key, label, group, example }) => ({
   key, label, group, example: example(company),
@@ -415,6 +450,9 @@ export const buildCompanyTemplate = (company, input = {}) => {
   if (headerText.length > HEADER_MAX) fail(`El encabezado admite hasta ${HEADER_MAX} caracteres.`);
   if (footerText.length > FOOTER_MAX) fail(`El pie de página admite hasta ${FOOTER_MAX} caracteres.`);
   if (hasVariable(headerText) || hasVariable(footerText)) fail('El encabezado y el pie de página no admiten datos variables.');
+  const headerFormat = MEDIA_FORMATS.includes(input.headerFormat) ? input.headerFormat : null;
+  const headerHandle = String(input.headerHandle || '').trim();
+  if (headerFormat && !headerHandle) fail('Falta el archivo de ejemplo del encabezado.');
 
   const used = [...bodyText.matchAll(VARIABLE)].map((m) => m[1]);
   const unknown = used.find((key) => !FIELD_KEYS.has(key));
@@ -436,7 +474,8 @@ export const buildCompanyTemplate = (company, input = {}) => {
   }
 
   const components = [];
-  if (headerText) components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
+  if (headerFormat) components.push({ type: 'HEADER', format: headerFormat, example: { header_handle: [headerHandle] } });
+  else if (headerText) components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
   components.push(body);
   if (footerText) components.push({ type: 'FOOTER', text: footerText });
 

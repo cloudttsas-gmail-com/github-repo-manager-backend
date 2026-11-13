@@ -1,11 +1,14 @@
 import { whatsappService } from '../services/whatsapp.service.js';
 import {
   companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, templateFieldsFor,
+  prepareHeaderSample, DOCUMENT_SOURCES,
 } from '../services/whatsappTemplates.service.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
+import TemplateMedia from '../models/TemplateMedia.js';
+import { uploadToR2 } from '../utils/storage.js';
 import AppError from '../utils/AppError.js';
 import { GRAPH_API_URL, GRAPH_API_VERSION } from '../config/meta.js';
 import crypto from 'crypto';
@@ -331,6 +334,21 @@ export const createTemplate = async (req, res, next) => {
     // Built here from the form fields, so only Operix data reaches Meta as variables
     const template = buildCompanyTemplate(company, req.body);
     const result = await whatsappService.createTemplate(waConfig, template);
+    // Meta keeps only the sample of a media header: Operix keeps what to attach when sending
+    const media = req.body.headerMedia;
+    if (template.components[0]?.format && template.components[0].format !== 'TEXT' && media?.source) {
+      await TemplateMedia.findOneAndUpdate(
+        { companyId: company._id, name: template.name, language: template.language },
+        {
+          tenantId: company.tenantId, format: template.components[0].format,
+          source: media.source,
+          // Only a file Operix stored itself (header-sample), never an outside link
+          fileUrl: media.source === 'file' && String(media.fileUrl || '').startsWith(`${process.env.R2_PUBLIC_URL}/whatsapp-templates/`) ? media.fileUrl : undefined,
+          fileName: String(media.fileName || '').slice(0, 120),
+        },
+        { upsert: true, runValidators: true },
+      );
+    }
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
@@ -342,7 +360,24 @@ export const createTemplate = async (req, res, next) => {
  */
 export const getTemplateFields = async (req, res, next) => {
   try {
-    res.status(200).json({ success: true, data: templateFieldsFor(await activeCompany(req)) });
+    res.status(200).json({ success: true, data: templateFieldsFor(await activeCompany(req)), documentSources: DOCUMENT_SOURCES });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Uploads the sample of a template's media header to Meta (and the company's file to
+ * storage), before the template is created with that sample.
+ */
+export const prepareTemplateHeader = async (req, res, next) => {
+  try {
+    const sample = await prepareHeaderSample(
+      await activeCompany(req),
+      { format: req.body.format, source: req.body.source, file: req.file },
+      { saveFile: (file) => uploadToR2(file, 'whatsapp-templates') },
+    );
+    res.status(200).json({ success: true, data: sample });
   } catch (error) {
     next(error);
   }
