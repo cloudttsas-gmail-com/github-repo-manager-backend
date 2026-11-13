@@ -1,5 +1,7 @@
 import { whatsappService } from '../services/whatsapp.service.js';
-import { companyWhatsAppAccount, ensureDefaultTemplates } from '../services/whatsappTemplates.service.js';
+import {
+  companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, templateFieldsFor,
+} from '../services/whatsappTemplates.service.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import Client from '../models/Client.js';
@@ -323,10 +325,24 @@ export const getTemplates = async (req, res, next) => {
  */
 export const createTemplate = async (req, res, next) => {
   try {
-    const waConfig = await accountOf(req);
+    const company = await activeCompany(req);
+    const waConfig = companyWhatsAppAccount(company);
     if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
-    const result = await whatsappService.createTemplate(waConfig, req.body);
+    // Built here from the form fields, so only Operix data reaches Meta as variables
+    const template = buildCompanyTemplate(company, req.body);
+    const result = await whatsappService.createTemplate(waConfig, template);
     res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * The data a template can insert, with this project's samples for Meta's review
+ */
+export const getTemplateFields = async (req, res, next) => {
+  try {
+    res.status(200).json({ success: true, data: templateFieldsFor(await activeCompany(req)) });
   } catch (error) {
     next(error);
   }

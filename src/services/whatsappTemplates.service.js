@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { GRAPH_API_URL } from '../config/meta.js';
 import { whatsappService } from './whatsapp.service.js';
+import AppError from '../utils/AppError.js';
 
 /**
  * WhatsApp notices of each company to its buyers.
@@ -358,4 +359,86 @@ export const propertyName = (lot, propertyType) => {
   if (!lot?.lotNumber) return 'su inmueble';
   const noun = PROPERTY_NOUNS[lot.propertyType || propertyType] || 'el inmueble';
   return `${noun} ${lot.lotNumber}${lot.manzana ? ` de la manzana ${lot.manzana}` : ''}`;
+};
+
+// ---------------------------------------------------------------- company templates
+
+/**
+ * Data a company's own template can carry. The template keeps them as named variables
+ * ({{nombre_comprador}}), so the name Meta stores already says which data fills it and
+ * Operix keeps no separate mapping. Each one has the sample Meta asks for at review.
+ */
+export const TEMPLATE_FIELDS = [
+  { key: 'nombre_comprador', label: 'Nombre del comprador', group: 'Comprador', example: () => EXAMPLE.client },
+  { key: 'inmueble', label: 'Inmueble', group: 'Comprador', example: () => EXAMPLE.property },
+  { key: 'valor_cuota', label: 'Valor de la cuota', group: 'Cuota', example: () => EXAMPLE.money },
+  { key: 'fecha_vencimiento', label: 'Fecha de vencimiento', group: 'Cuota', example: () => EXAMPLE.date },
+  { key: 'numero_cuota', label: 'Número de cuota', group: 'Cuota', example: () => '3' },
+  { key: 'dias_mora', label: 'Días de mora', group: 'Cuota', example: () => '15' },
+  { key: 'saldo_pendiente', label: 'Saldo pendiente', group: 'Contrato', example: () => '$24.750.000' },
+  { key: 'valor_ultimo_pago', label: 'Valor del último pago', group: 'Contrato', example: () => '$2.250.000' },
+  { key: 'nombre_proyecto', label: 'Nombre del proyecto', group: 'Proyecto', example: (company) => company?.name || EXAMPLE.company },
+  { key: 'telefono_proyecto', label: 'Teléfono del proyecto', group: 'Proyecto', example: (company) => company?.phone || '601 555 1234' },
+];
+
+const FIELD_KEYS = new Set(TEMPLATE_FIELDS.map((f) => f.key));
+const VARIABLE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+const hasVariable = (text) => /\{\{[^{}]*\}\}/.test(text);
+const CUSTOM_CATEGORIES = ['UTILITY', 'MARKETING'];
+const BODY_MAX = 1024;
+const HEADER_MAX = 60;
+
+/** The fields with this company's samples (its own name and phone). */
+export const templateFieldsFor = (company) => TEMPLATE_FIELDS.map(({ key, label, group, example }) => ({
+  key, label, group, example: example(company),
+}));
+
+const fail = (message) => { throw new AppError(message, 400); };
+
+/**
+ * Meta's create-template payload for a company template, checked against the rules Meta
+ * rejects at review: only Operix data as variables, none at the start or end of the text,
+ * a sample for each one, and no variables in the header or footer.
+ */
+export const buildCompanyTemplate = (company, input = {}) => {
+  const name = String(input.name || '').trim();
+  const bodyText = String(input.body || '').trim();
+  const headerText = String(input.header || '').trim();
+  const footerText = String(input.footer || '').trim();
+  const category = CUSTOM_CATEGORIES.includes(input.category) ? input.category : 'UTILITY';
+  const language = /^[a-z]{2}(_[A-Z]{2})?$/.test(input.language || '') ? input.language : LANGUAGE;
+
+  if (!/^[a-z0-9_]{1,512}$/.test(name)) fail('El nombre solo puede tener minúsculas, números y guiones bajos.');
+  if (name.startsWith('operix_')) fail('Los nombres que empiezan por «operix_» son de los avisos automáticos.');
+  if (!bodyText) fail('Escribe el cuerpo del mensaje.');
+  if (bodyText.length > BODY_MAX) fail(`El cuerpo admite hasta ${BODY_MAX} caracteres.`);
+  if (headerText.length > HEADER_MAX) fail(`El encabezado admite hasta ${HEADER_MAX} caracteres.`);
+  if (footerText.length > FOOTER_MAX) fail(`El pie de página admite hasta ${FOOTER_MAX} caracteres.`);
+  if (hasVariable(headerText) || hasVariable(footerText)) fail('El encabezado y el pie de página no admiten datos variables.');
+
+  const used = [...bodyText.matchAll(VARIABLE)].map((m) => m[1]);
+  const unknown = used.find((key) => !FIELD_KEYS.has(key));
+  if (unknown !== undefined) fail(`{{${unknown}}} no es un dato de Operix. Usa los botones de «Insertar dato».`);
+  if (/^\{\{/.test(bodyText)) fail('Meta no acepta un mensaje que empiece con un dato variable.');
+  if (/\}\}$/.test(bodyText.replace(/[.!?¡¿\s]+$/, ''))) fail('Meta no acepta un mensaje que termine con un dato variable.');
+
+  const fields = templateFieldsFor(company);
+  const examples = input.examples || {};
+  const keys = [...new Set(used)];
+  const body = { type: 'BODY', text: bodyText };
+  if (keys.length) {
+    body.example = {
+      body_text_named_params: keys.map((key) => ({
+        param_name: key,
+        example: String(examples[key] || '').trim() || fields.find((f) => f.key === key).example,
+      })),
+    };
+  }
+
+  const components = [];
+  if (headerText) components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
+  components.push(body);
+  if (footerText) components.push({ type: 'FOOTER', text: footerText });
+
+  return { name, category, language, ...(keys.length ? { parameter_format: 'NAMED' } : {}), components };
 };

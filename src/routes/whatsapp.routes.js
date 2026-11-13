@@ -7,6 +7,7 @@ import {
   getTemplates,
   createDefaultTemplates,
   createTemplate,
+  getTemplateFields,
   deleteTemplate,
   sendMessage,
   connect,
@@ -47,6 +48,7 @@ router.post('/templates/defaults', canConfigure, companyMiddleware, createDefaul
 router.post('/disconnect', canConfigure, companyMiddleware, disconnect);
 router.get('/conversations', canFollowUp, companyMiddleware, getConversations);
 router.get('/templates', canFollowUp, companyMiddleware, getTemplates);
+router.get('/template-fields', canFollowUp, companyMiddleware, getTemplateFields);
 router.post('/templates', canFollowUp, companyMiddleware, createTemplate);
 router.delete('/templates/:name', canFollowUp, companyMiddleware, deleteTemplate);
 router.get('/history/:clientId', canFollowUp, companyMiddleware, getChatHistory);

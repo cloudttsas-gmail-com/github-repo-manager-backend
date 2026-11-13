@@ -6,6 +6,7 @@ import VerificationToken from '../src/models/VerificationToken.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import {
   DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
+  buildCompanyTemplate, templateFieldsFor,
 } from '../src/services/whatsappTemplates.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
@@ -168,5 +169,43 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
     expect(propertyName({ lotNumber: '301', propertyType: 'apartamentos' })).toBe('el apartamento 301');
     expect(propertyName(null)).toBe('su inmueble');
     expect(publicLinkSuffix('https://api.test/api/public/statement/xyz?s=sig')).toBe('statement/xyz?s=sig');
+  });
+});
+
+describe('A company template only carries Operix data as named variables', () => {
+  const company = { name: 'Inmobiliaria Horizonte', phone: '6015551234' };
+
+  it('turns the inserted data into named variables with a sample for each one', () => {
+    const t = buildCompanyTemplate(company, {
+      name: 'recordatorio_demo', category: 'UTILITY', footer: 'Proyecto Demo',
+      body: 'Hola {{nombre_comprador}}, su cuota de {{inmueble}} vence el {{fecha_vencimiento}}. Gracias por su pago, {{nombre_comprador}}, y que tenga buen día.',
+      examples: { fecha_vencimiento: '05/12/2026' },
+    });
+    expect(t.parameter_format).toBe('NAMED');
+    const bodyPart = t.components.find((c) => c.type === 'BODY');
+    expect(bodyPart.example.body_text_named_params).toEqual([
+      { param_name: 'nombre_comprador', example: 'Laura Gómez' },
+      { param_name: 'inmueble', example: 'el lote 12 de la manzana B' },
+      { param_name: 'fecha_vencimiento', example: '05/12/2026' },
+    ]);
+    expect(t.components.at(-1)).toEqual({ type: 'FOOTER', text: 'Proyecto Demo' });
+    expect(templateFieldsFor(company).find((f) => f.key === 'nombre_proyecto').example).toBe('Inmobiliaria Horizonte');
+  });
+
+  it('a text without data is sent without parameter format or samples', () => {
+    const t = buildCompanyTemplate(company, { name: 'aviso_simple', body: 'Recuerde revisar su estado de cuenta en el portal.' });
+    expect(t.parameter_format).toBeUndefined();
+    expect(t.components).toEqual([{ type: 'BODY', text: 'Recuerde revisar su estado de cuenta en el portal.' }]);
+  });
+
+  it.each([
+    [{ name: 'x', body: 'Hola {{1}}, su cuota vence pronto.' }, /no es un dato de Operix/],
+    [{ name: 'x', body: '{{nombre_comprador}}, su cuota vence pronto.' }, /empiece/],
+    [{ name: 'x', body: 'Su cuota vence el {{fecha_vencimiento}}.' }, /termine/],
+    [{ name: 'x', header: 'Hola {{nombre_comprador}}', body: 'Su cuota vence pronto.' }, /encabezado/],
+    [{ name: 'operix_mio', body: 'Su cuota vence pronto.' }, /operix_/],
+    [{ name: 'Con Espacios', body: 'Su cuota vence pronto.' }, /minúsculas/],
+  ])('rejects what Meta would reject: %j', (input, message) => {
+    expect(() => buildCompanyTemplate(company, input)).toThrow(message);
   });
 });
