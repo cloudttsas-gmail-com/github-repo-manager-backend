@@ -3,10 +3,13 @@ import mongoose from 'mongoose';
 import Company from '../src/models/Company.js';
 import Client from '../src/models/Client.js';
 import VerificationToken from '../src/models/VerificationToken.js';
+import Lot from '../src/models/Lot.js';
+import Contract from '../src/models/Contract.js';
+import Quota from '../src/models/Quota.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import {
   DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
-  buildCompanyTemplate, templateFieldsFor, prepareHeaderSample,
+  buildCompanyTemplate, templateFieldsFor, prepareHeaderSample, projectSamples,
 } from '../src/services/whatsappTemplates.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
@@ -247,5 +250,37 @@ describe('A company template can carry an image, a video or a document in its he
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+});
+
+describe('The samples for Meta look like the project, never like a buyer', () => {
+  beforeAll(async () => { await connectDB(); });
+
+  it('takes a property, a typical quota and balance, and the next allowed payment day of the project', async () => {
+    const tenantId = new mongoose.Types.ObjectId();
+    const companyId = new mongoose.Types.ObjectId();
+    const company = { _id: companyId, tenantId, name: 'Torres del Parque', propertyType: 'apartamentos', paymentPlanPolicy: { allowedPaymentDays: [10] } };
+    const contractId = new mongoose.Types.ObjectId();
+    await Lot.collection.insertOne({ tenantId, companyId, lotNumber: '301', propertyType: 'apartamentos', isDeleted: false, createdAt: new Date() });
+    await Contract.collection.insertOne({ _id: contractId, tenantId, companyId, totalValue: 200000000, createdAt: new Date() });
+    await Quota.collection.insertMany([1, 2, 3].map((n) => ({ tenantId, companyId, contract: contractId, type: 'normal', number: n, value: 1999600, createdAt: new Date() })));
+    try {
+      const samples = await projectSamples(company);
+      expect(samples.property).toBe('el apartamento 301');
+      expect(samples.quota).toBe('$2.000.000');
+      expect(samples.balance).toBe('$120.000.000');
+      expect(samples.dueDate).toMatch(/^10\/\d{2}\/\d{4}$/);
+      const fields = templateFieldsFor(company, samples);
+      expect(fields.find((f) => f.key === 'nombre_comprador').example).toBe('Laura Gómez');
+      expect(fields.find((f) => f.key === 'inmueble').example).toBe('el apartamento 301');
+    } finally {
+      await Promise.all([Lot, Contract, Quota].map((M) => M.collection.deleteMany({ companyId })));
+    }
+  });
+
+  it('a project without data keeps the generic samples', async () => {
+    const samples = await projectSamples({ _id: new mongoose.Types.ObjectId(), tenantId: new mongoose.Types.ObjectId() });
+    expect(templateFieldsFor({ name: 'X' }, samples).find((f) => f.key === 'inmueble').example).toBe('el lote 12 de la manzana B');
+    expect(samples.dueDate).toMatch(/^\d{2}\/\d{2}\/\d{4}$/);
   });
 });

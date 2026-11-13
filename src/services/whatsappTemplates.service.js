@@ -2,6 +2,10 @@ import PDFDocument from 'pdfkit';
 import { GRAPH_API_URL } from '../config/meta.js';
 import { whatsappService } from './whatsapp.service.js';
 import AppError from '../utils/AppError.js';
+import Lot from '../models/Lot.js';
+import Quota from '../models/Quota.js';
+import Contract from '../models/Contract.js';
+import { resolvePaymentPlanPolicy, toCalendarDate, dayInMonth, compareCalendar } from './paymentPlanRules.js';
 
 /**
  * WhatsApp notices of each company to its buyers.
@@ -372,13 +376,13 @@ export const propertyName = (lot, propertyType) => {
  */
 export const TEMPLATE_FIELDS = [
   { key: 'nombre_comprador', label: 'Nombre del comprador', group: 'Comprador', example: () => EXAMPLE.client },
-  { key: 'inmueble', label: 'Inmueble', group: 'Comprador', example: () => EXAMPLE.property },
-  { key: 'valor_cuota', label: 'Valor de la cuota', group: 'Cuota', example: () => EXAMPLE.money },
-  { key: 'fecha_vencimiento', label: 'Fecha de vencimiento', group: 'Cuota', example: () => EXAMPLE.date },
+  { key: 'inmueble', label: 'Inmueble', group: 'Comprador', example: (company, p) => p.property || EXAMPLE.property },
+  { key: 'valor_cuota', label: 'Valor de la cuota', group: 'Cuota', example: (company, p) => p.quota || EXAMPLE.money },
+  { key: 'fecha_vencimiento', label: 'Fecha de vencimiento', group: 'Cuota', example: (company, p) => p.dueDate || EXAMPLE.date },
   { key: 'numero_cuota', label: 'Número de cuota', group: 'Cuota', example: () => '3' },
   { key: 'dias_mora', label: 'Días de mora', group: 'Cuota', example: () => '15' },
-  { key: 'saldo_pendiente', label: 'Saldo pendiente', group: 'Contrato', example: () => '$24.750.000' },
-  { key: 'valor_ultimo_pago', label: 'Valor del último pago', group: 'Contrato', example: () => '$2.250.000' },
+  { key: 'saldo_pendiente', label: 'Saldo pendiente', group: 'Contrato', example: (company, p) => p.balance || '$24.750.000' },
+  { key: 'valor_ultimo_pago', label: 'Valor del último pago', group: 'Contrato', example: (company, p) => p.quota || '$2.250.000' },
   { key: 'nombre_proyecto', label: 'Nombre del proyecto', group: 'Proyecto', example: (company) => company?.name || EXAMPLE.company },
   { key: 'telefono_proyecto', label: 'Teléfono del proyecto', group: 'Proyecto', example: (company) => company?.phone || '601 555 1234' },
 ];
@@ -423,9 +427,45 @@ export const prepareHeaderSample = async (company, { format, source, file }, { s
   return { format, source: 'file', handle, fileUrl, fileName: file.originalname };
 };
 
-/** The fields with this company's samples (its own name and phone). */
-export const templateFieldsFor = (company) => TEMPLATE_FIELDS.map(({ key, label, group, example }) => ({
-  key, label, group, example: example(company),
+const median = (values) => {
+  const sorted = values.filter((v) => Number(v) > 0).map(Number).sort((a, b) => a - b);
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
+};
+const roundMoney = (value) => money(Math.round(value / 1000) * 1000);
+
+/**
+ * Samples that look like this project without exposing any buyer: one of its properties
+ * (inventory, not personal data), a typical quota and balance of its contracts, and the
+ * next payment day its policy allows. The buyer's name stays made up.
+ */
+export const projectSamples = async (company) => {
+  if (!company?._id) return {};
+  const scope = { companyId: company._id, tenantId: company.tenantId };
+  const [lot, quotas, contracts] = await Promise.all([
+    Lot.findOne({ ...scope, isDeleted: { $ne: true } }).sort({ createdAt: 1 }).select('lotNumber manzana propertyType').lean(),
+    Quota.find({ ...scope, type: 'normal' }).sort({ createdAt: -1 }).limit(200).select('value').lean(),
+    Contract.find(scope).sort({ createdAt: -1 }).limit(100).select('totalValue').lean(),
+  ]);
+  const quota = median(quotas.map((q) => q.value));
+  const contractValue = median(contracts.map((c) => c.totalValue));
+
+  // The next day the project's policy allows, after today (Bogotá)
+  const today = toCalendarDate(new Date());
+  const { allowedPaymentDays } = resolvePaymentPlanPolicy(company.paymentPlanPolicy);
+  const due = [0, 1, 2].flatMap((ahead) => allowedPaymentDays.map((day) => dayInMonth(today.y, today.m + ahead, day)))
+    .find((cal) => compareCalendar(cal, today) > 0);
+
+  return {
+    property: lot ? propertyName(lot, company.propertyType) : null,
+    quota: quota ? roundMoney(quota) : null,
+    balance: contractValue ? roundMoney(contractValue * 0.6) : null,
+    dueDate: due ? `${String(due.d).padStart(2, '0')}/${String(due.m + 1).padStart(2, '0')}/${due.y}` : null,
+  };
+};
+
+/** The fields with this company's samples: its name and phone, and `projectSamples` when given. */
+export const templateFieldsFor = (company, samples = {}) => TEMPLATE_FIELDS.map(({ key, label, group, example }) => ({
+  key, label, group, example: example(company, samples),
 }));
 
 const fail = (message) => { throw new AppError(message, 400); };
@@ -435,7 +475,7 @@ const fail = (message) => { throw new AppError(message, 400); };
  * rejects at review: only Operix data as variables, none at the start or end of the text,
  * a sample for each one, and no variables in the header or footer.
  */
-export const buildCompanyTemplate = (company, input = {}) => {
+export const buildCompanyTemplate = (company, input = {}, fields = templateFieldsFor(company)) => {
   const name = String(input.name || '').trim();
   const bodyText = String(input.body || '').trim();
   const headerText = String(input.header || '').trim();
@@ -460,7 +500,6 @@ export const buildCompanyTemplate = (company, input = {}) => {
   if (/^\{\{/.test(bodyText)) fail('Meta no acepta un mensaje que empiece con un dato variable.');
   if (/\}\}$/.test(bodyText.replace(/[.!?¡¿\s]+$/, ''))) fail('Meta no acepta un mensaje que termine con un dato variable.');
 
-  const fields = templateFieldsFor(company);
   const examples = input.examples || {};
   const keys = [...new Set(used)];
   const body = { type: 'BODY', text: bodyText };
