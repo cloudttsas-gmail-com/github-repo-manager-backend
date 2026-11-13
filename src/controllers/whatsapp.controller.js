@@ -8,7 +8,7 @@ import Message from '../models/Message.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import TemplateMedia from '../models/TemplateMedia.js';
-import { uploadToR2 } from '../utils/storage.js';
+import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AppError from '../utils/AppError.js';
 import { GRAPH_API_URL, GRAPH_API_VERSION } from '../config/meta.js';
 import crypto from 'crypto';
@@ -392,6 +392,10 @@ export const deleteTemplate = async (req, res, next) => {
     const waConfig = await accountOf(req);
     if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const result = await whatsappService.deleteTemplate(waConfig, name);
+    // Meta deletes every language of the name; its header file goes too
+    const media = await TemplateMedia.find({ companyId: req.user.companyId, name });
+    await Promise.all(media.filter((m) => m.fileUrl).map((m) => deleteFromR2(m.fileUrl).catch(() => null)));
+    await TemplateMedia.deleteMany({ companyId: req.user.companyId, name });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
