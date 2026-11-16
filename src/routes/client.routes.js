@@ -15,6 +15,7 @@ import { publicLinkUrl } from '../utils/publicLinks.js';
 import { buildStatementSummary, startOfBogotaDay } from '../services/statementSummary.service.js';
 import { sendClientStatement, shareClientStatementLink, getClientStatementDeliveries } from '../controllers/statement.controller.js';
 import { escapeRegex } from '../utils/regex.js';
+import { contractsWithoutPlan } from '../services/pending.service.js';
 
 const router = express.Router();
 
@@ -215,6 +216,8 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
     const moraOnly = req.query.moraOnly === 'true';
     const alDiaOnly = req.query.alDiaOnly === 'true';
     const moraRange = MORA_RANGES[req.query.moraRange];
+    // Pendientes › «Contratos sin plan de pagos»: the clients who own one
+    const withoutPlan = req.query.withoutPlan === 'true';
 
     // Dynamic sort
     let sortObj = { createdAt: -1 };
@@ -223,6 +226,10 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
     }
 
     const aggregatePipeline = await buildClientRowsPipeline(req, { search, behaviorFilter });
+    if (withoutPlan) {
+      const rows = await contractsWithoutPlan({ tenantId: req.user.tenantId, companyId: req.user.companyId });
+      aggregatePipeline.push({ $match: { _id: { $in: [...new Set(rows.map((row) => String(row.client)))].map((id) => new mongoose.Types.ObjectId(id)) } } });
+    }
 
     if (moraRange) {
       aggregatePipeline.push({ $match: { $expr: inMoraRange(moraRange) } });

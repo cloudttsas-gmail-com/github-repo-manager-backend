@@ -14,6 +14,7 @@ import { generateStatementStream } from '../utils/statement.js';
 import { loadStatement, toStatementPdfData, buildStatementSummary, lotLabel } from '../services/statementSummary.service.js';
 import { recordDelivery } from './statement.controller.js';
 import { parseBusinessDate } from '../utils/dates.js';
+import { publicLinkUrl } from '../utils/publicLinks.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
 import { parsePositiveAmount } from '../utils/math.js';
@@ -182,7 +183,13 @@ export const getPortalSummary = async (req, res, next) => {
     const clientContact = await Client.findOne({ _id: clientId, tenantId }).select('email');
     // Payments reported and not yet reviewed, so Inicio says «en revisión» instead of asking again
     const inReview = await PaymentAttempt.aggregate([
-      { $match: { clientId: new mongoose.Types.ObjectId(String(clientId)), tenantId: new mongoose.Types.ObjectId(String(tenantId)), status: 'PENDIENTE' } },
+      // Legacy pending rows were already on the quotas (no quotaValue, no flag): they don't wait for anything
+      { $match: {
+        clientId: new mongoose.Types.ObjectId(String(clientId)),
+        tenantId: new mongoose.Types.ObjectId(String(tenantId)),
+        status: 'PENDIENTE',
+        $or: [{ appliedToQuotas: false }, { appliedToQuotas: { $exists: false }, quotaValue: { $ne: null } }],
+      } },
       { $group: { _id: '$contractId', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
     ]);
 
@@ -218,7 +225,9 @@ export const getPortalSummary = async (req, res, next) => {
         companySlug,
         companyPhone,
         companyEmail,
-        contracts: contractsData
+        contracts: contractsData,
+        // Payments in review not tied to a contract (Inicio shows them on a line of their own)
+        inReviewWithoutContract: (({ count = 0, amount = 0 } = {}) => ({ count, amount }))(inReview.find((row) => !row._id)),
       }
     });
   } catch (error) {
@@ -325,6 +334,7 @@ export const getMyPayments = async (req, res, next) => {
         contractId: a.contractId?._id || null,
         lotLabel: a.contractId?.lot ? lotLabel(a.contractId.lot) : null,
         rejectedReason: a.status === 'RECHAZADO' ? (a.rejectedReason || '') : null,
+        rejectedAt: a.status === 'RECHAZADO' ? (a.rejectedAt || a.updatedAt) : null,
       };
     });
 
@@ -559,7 +569,8 @@ export const getPortalContractDetail = async (req, res, next) => {
 
     const quotas = await Quota.find({ contract: contract._id, tenantId }).sort({ type: 1, number: 1 });
 
-    const summary = buildStatementSummary(contract, quotas, { apiUrl: process.env.API_URL || '' });
+    const apiUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
+    const summary = buildStatementSummary(contract, quotas, { apiUrl });
     const totalPagado = summary.totalPaid;
     const PORTAL_STATUS = { pagada: 'PAGADA', mora: 'VENCIDA', abonada: 'PENDIENTE', pendiente: 'PENDIENTE' };
 
@@ -572,6 +583,14 @@ export const getPortalContractDetail = async (req, res, next) => {
       status: PORTAL_STATUS[q.state],
       fechaPago: q.paymentDate,
       observaciones: quotas.find((orig) => String(orig._id) === q.id)?.paymentObservations,
+      // For the redesigned plan: the real name (Separación, Inicial 1, Cuota 3), state and receipt
+      id: q.id,
+      tipo: q.type,
+      etiqueta: q.label,
+      estado: q.state,
+      estadoTexto: q.stateLabel,
+      reciboNumero: quotas.find((orig) => String(orig._id) === q.id)?.receiptNumber || null,
+      reciboUrl: q.state === 'pagada' || q.paid > 0 ? publicLinkUrl('receipt', q.id, apiUrl) : null,
     }));
 
     const data = {
@@ -598,7 +617,11 @@ export const getPortalContractDetail = async (req, res, next) => {
       valorEnMora: summary.overdueAmount,
       diasMora: summary.daysOverdue,
       status: contract.status || 'ACTIVO',
-      planPagos
+      planPagos,
+      // Same next quota and statement as Inicio, the PDF and the messages
+      proximaCuota: summary.nextQuota,
+      estadoCuenta: { status: summary.status, statementUrl: summary.statementUrl, excelUrl: summary.excelUrl },
+      estadoLegal: contract.legalStatus || null,
     };
 
     res.json({

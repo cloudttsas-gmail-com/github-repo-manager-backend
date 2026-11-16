@@ -1,73 +1,117 @@
 import mongoose from 'mongoose';
+import Client from '../models/Client.js';
 import CollectionAction from '../models/CollectionAction.js';
 import Contract from '../models/Contract.js';
 import PaymentAttempt from '../models/PaymentAttempt.js';
+import { isAppliedToQuotas } from './paymentApplication.service.js';
 import { bogotaDay, startOfBogotaDay } from './statementSummary.service.js';
 
 export const SELLER_ROLES = ['vendedor', 'ejecutivo_comercial', 'agent'];
+/** Pendientes looks at broken promises this far back, and so does their list */
+export const BROKEN_WINDOW_DAYS = 60;
+/** The furthest a promise can be set */
+export const MAX_PROMISE_DAYS = 180;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 // Works whether `clientId` was populated or not
 const clientOf = (action) => String(action.clientId?._id || action.clientId);
-const endOfBogotaDay = (date) => new Date(`${bogotaDay(date)}T23:59:59.999-05:00`);
+export const endOfBogotaDay = (date) => new Date(`${bogotaDay(date)}T23:59:59.999-05:00`);
 
-/** The clients a seller works with: the ones of their sales */
-export const sellerClientIds = async ({ tenantId, companyId, userId }) =>
-  Contract.find({ tenantId, companyId, sellerId: userId }).distinct('client');
-
-/**
- * A promise is kept when the approved payments of that client (and contract, if it names one), paid
- * between the day of the action and the promised date, add up to the promised amount. Otherwise it
- * is pending until that date and broken after it.
- */
-export const promiseState = (action, paidAmount, now = new Date()) => {
-  if (!action.promise?.dueDate) return null;
-  if (paidAmount >= (action.promise.amount || 0)) return 'cumplida';
-  return startOfBogotaDay(now) > endOfBogotaDay(action.promise.dueDate) ? 'incumplida' : 'vigente';
+/** The clients a seller works with: the ones of their sales and the ones they created (as in the list) */
+export const sellerClientIds = async ({ tenantId, companyId, userId }) => {
+  const [sold, created] = await Promise.all([
+    Contract.find({ tenantId, companyId, sellerId: userId }).distinct('client'),
+    Client.find({ tenantId, companyId, createdBy: userId }).distinct('_id'),
+  ]);
+  return [...new Map([...sold, ...created].map((id) => [String(id), id])).values()];
 };
 
-/** Adds `promiseState` and `promisePaid` to each action that carries a promise */
-export const withPromiseStates = async (actions, { tenantId, companyId }, now = new Date()) => {
-  const promised = actions.filter((action) => action.promise?.dueDate);
+/**
+ * Adds `promiseState` and `promisePaid` to each action. For each client, promises are taken oldest
+ * first and use up the approved payments reported after the action and paid by the promised date, so
+ * one payment never keeps two promises. States:
+ * - cumplida: those payments reach the amount;
+ * - en_revision: not reached yet, but a payment reported in the window waits for approval;
+ * - vigente: not reached and the date hasn't passed;
+ * - incumplida: the date passed without it;
+ * - reemplazada: broken, but the client agreed a newer promise afterwards.
+ * `allActions` (optional) are every promise of those clients, so allocation and replacement look at
+ * the whole history even when `actions` is one page.
+ */
+export const withPromiseStates = async (actions, { tenantId, companyId }, now = new Date(), allActions = null) => {
+  const promised = (allActions || actions).filter((action) => action.promise?.dueDate);
   if (!promised.length) return actions.map((action) => ({ ...action, promiseState: null, promisePaid: 0 }));
 
   const earliest = promised.reduce((min, action) => (action.createdAt < min ? action.createdAt : min), promised[0].createdAt);
+  const latestDue = promised.reduce((max, action) => (action.promise.dueDate > max ? action.promise.dueDate : max), promised[0].promise.dueDate);
   const payments = await PaymentAttempt.find({
     tenantId: toId(tenantId),
     companyId: toId(companyId),
-    status: 'APROBADO',
+    status: { $in: ['APROBADO', 'PENDIENTE'] },
     clientId: { $in: [...new Set(promised.map(clientOf))].map(toId) },
-    fechaPago: { $gte: startOfBogotaDay(earliest) },
-  }).select('clientId contractId amount fechaPago').lean();
+    createdAt: { $gte: earliest },
+    fechaPago: { $lte: endOfBogotaDay(latestDue) },
+  }).select('clientId contractId amount fechaPago createdAt status appliedToQuotas quotaValue').sort({ fechaPago: 1, createdAt: 1 }).lean();
 
-  return actions.map((action) => {
-    if (!action.promise?.dueDate) return { ...action, promiseState: null, promisePaid: 0 };
-    const from = startOfBogotaDay(action.createdAt);
-    const to = endOfBogotaDay(action.promise.dueDate);
-    const paid = payments
-      .filter((payment) => String(payment.clientId) === clientOf(action))
-      .filter((payment) => !action.contractId || String(payment.contractId) === String(action.contractId))
-      .filter((payment) => payment.fechaPago >= from && payment.fechaPago <= to)
-      .reduce((sum, payment) => sum + (payment.amount || 0), 0);
-    return { ...action, promisePaid: paid, promiseState: promiseState(action, paid, now) };
-  });
+  // Approved money left to allocate, per payment
+  const left = new Map(payments.filter((p) => p.status === 'APROBADO').map((p) => [String(p._id), p.amount || 0]));
+  const today = startOfBogotaDay(now);
+  const states = new Map();
+
+  const byClient = new Map();
+  promised.forEach((action) => byClient.set(clientOf(action), [...(byClient.get(clientOf(action)) || []), action]));
+  for (const [client, list] of byClient) {
+    list.sort((a, b) => a.createdAt - b.createdAt);
+    list.forEach((action, index) => {
+      const amount = action.promise.amount || 0;
+      const due = endOfBogotaDay(action.promise.dueDate);
+      const fits = (payment) => String(payment.clientId) === client
+        && (!action.contractId || String(payment.contractId) === String(action.contractId))
+        && payment.createdAt >= action.createdAt
+        && payment.fechaPago <= due;
+      let paid = 0;
+      for (const payment of payments) {
+        if (paid >= amount) break;
+        if (payment.status !== 'APROBADO' || !fits(payment)) continue;
+        const available = left.get(String(payment._id)) || 0;
+        const take = Math.min(available, amount - paid);
+        if (take <= 0) continue;
+        left.set(String(payment._id), available - take);
+        paid += take;
+      }
+      // Reported in the window and waiting for approval (legacy rows already on the quotas don't count)
+      const inReview = payments.some((payment) => payment.status === 'PENDIENTE' && !isAppliedToQuotas(payment) && fits(payment));
+      let state;
+      if (paid >= amount) state = 'cumplida';
+      else if (inReview) state = 'en_revision';
+      else if (today > due) state = list.slice(index + 1).length ? 'reemplazada' : 'incumplida';
+      else state = 'vigente';
+      states.set(String(action._id), { promiseState: state, promisePaid: paid });
+    });
+  }
+
+  return actions.map((action) => ({ ...action, ...(states.get(String(action._id)) || { promiseState: null, promisePaid: 0 }) }));
 };
 
 /**
- * Open promises (not yet kept) whose date is today or already passed, for the Pendientes counts.
- * Looks back 60 days of promised dates.
+ * Promises for the Pendientes counts: open ones due today and broken ones in the last
+ * BROKEN_WINDOW_DAYS days (the same window as their list).
  */
 export const openPromises = async ({ tenantId, companyId, clientIds }, now = new Date()) => {
-  const filter = {
-    tenantId,
-    companyId,
-    'promise.dueDate': { $gte: new Date(startOfBogotaDay(now).getTime() - 60 * 24 * 60 * 60 * 1000), $lte: endOfBogotaDay(now) },
-  };
+  const filter = { tenantId, companyId, 'promise.dueDate': { $exists: true } };
   if (clientIds) filter.clientId = { $in: clientIds };
-  const actions = await CollectionAction.find(filter).lean();
-  const states = await withPromiseStates(actions, { tenantId, companyId }, now);
+  const actions = await CollectionAction.find({
+    ...filter,
+    'promise.dueDate': { $gte: new Date(startOfBogotaDay(now).getTime() - BROKEN_WINDOW_DAYS * DAY_MS) },
+  }).lean();
+  if (!actions.length) return { dueToday: [], broken: [] };
+  // The whole promise history of those clients decides allocation and replacement
+  const history = await CollectionAction.find({ ...filter, clientId: { $in: [...new Set(actions.map(clientOf))].map(toId) } }).lean();
+  const states = await withPromiseStates(actions, { tenantId, companyId }, now, history);
   const today = bogotaDay(now);
-  const dueToday = states.filter((action) => action.promiseState === 'vigente' && bogotaDay(action.promise.dueDate) === today);
-  const broken = states.filter((action) => action.promiseState === 'incumplida');
-  return { dueToday, broken };
+  return {
+    dueToday: states.filter((action) => action.promiseState === 'vigente' && bogotaDay(action.promise.dueDate) === today),
+    broken: states.filter((action) => action.promiseState === 'incumplida'),
+  };
 };

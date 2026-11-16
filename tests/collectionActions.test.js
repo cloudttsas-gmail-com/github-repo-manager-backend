@@ -154,13 +154,58 @@ describe('Collection actions, promises and Pendientes', () => {
       await PaymentAttempt.deleteMany({ tenantId: a.tenantId, status: 'APROBADO' });
     });
 
-    it('a promise past its date without enough payment is broken', async () => {
+    it('a broken promise followed by a newer one is replaced, not counted as broken', async () => {
       await CollectionAction.create({
         tenantId: a.tenantId, companyId: a.companyId, clientId: buyer._id, channel: 'visita', result: 'promesa',
         promise: { amount: 50000, dueDate: daysFromNow(-3) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-6),
       });
+      const replaced = await request(app).get(`/api/collection-actions?${q(a)}&promise=reemplazada`).set('Authorization', `Bearer ${a.token}`);
+      expect(replaced.body.data.actions.length).toBe(1);
       const broken = await request(app).get(`/api/collection-actions?${q(a)}&promise=incumplida`).set('Authorization', `Bearer ${a.token}`);
-      expect(broken.body.data.actions.length).toBe(1);
+      expect(broken.body.data.actions.length).toBe(0);
+    });
+
+    it('a broken promise with no newer one is broken; one payment keeps only one of two promises', async () => {
+      await CollectionAction.create([
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 40000, dueDate: daysFromNow(-2) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-9) },
+      ]);
+      const broken = await request(app).get(`/api/collection-actions?${q(a)}&promise=incumplida`).set('Authorization', `Bearer ${a.token}`);
+      expect(broken.body.data.actions.map((x) => String(x.clientId))).toEqual([String(otherBuyer._id)]);
+      await CollectionAction.deleteMany({ clientId: otherBuyer._id });
+
+      // Two open promises of 30.000 for the same client; one approved payment of 30.000 keeps only the older
+      await CollectionAction.create([
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 30000, dueDate: daysFromNow(5) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-2) },
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 30000, dueDate: daysFromNow(6) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-1) },
+      ]);
+      await PaymentAttempt.create({
+        tenantId: a.tenantId, companyId: a.companyId, contractId: otherContract._id, clientId: otherBuyer._id, amount: 30000,
+        banco: 'Banco', paymentMethod: 'transferencia', fechaPago: new Date(), status: 'APROBADO',
+      });
+      const list = await request(app).get(`/api/collection-actions?${q(a)}&clientId=${otherBuyer._id}`).set('Authorization', `Bearer ${a.token}`);
+      expect(list.body.data.actions.map((x) => x.promiseState).sort()).toEqual(['cumplida', 'vigente']);
+
+      // A payment reported and waiting for approval puts the open one «en revisión»
+      await PaymentAttempt.create({
+        tenantId: a.tenantId, companyId: a.companyId, contractId: otherContract._id, clientId: otherBuyer._id, amount: 30000, quotaValue: 30000,
+        banco: 'Banco', paymentMethod: 'transferencia', fechaPago: new Date(), status: 'PENDIENTE', appliedToQuotas: false,
+      });
+      const review = await request(app).get(`/api/collection-actions?${q(a)}&clientId=${otherBuyer._id}`).set('Authorization', `Bearer ${a.token}`);
+      expect(review.body.data.actions.map((x) => x.promiseState).sort()).toEqual(['cumplida', 'en_revision']);
+      await CollectionAction.deleteMany({ clientId: otherBuyer._id });
+      await PaymentAttempt.deleteMany({ clientId: otherBuyer._id });
+    });
+
+    it('rejects promise dates beyond the limit and agents writing', async () => {
+      const far = await request(app).post(`/api/collection-actions?${q(a)}`).set('Authorization', `Bearer ${a.token}`)
+        .send({ clientId: buyer._id, channel: 'llamada', result: 'promesa', promise: { amount: 1000, dueDate: isoDay(daysFromNow(400)) } });
+      expect(far.statusCode).toBe(400);
+      const bad = await request(app).post(`/api/collection-actions?${q(a)}`).set('Authorization', `Bearer ${a.token}`)
+        .send({ clientId: buyer._id, channel: 'llamada', result: 'promesa', promise: { amount: 1000, dueDate: '2026-13-45' } });
+      expect(bad.statusCode).toBe(400);
     });
   });
 
@@ -173,8 +218,8 @@ describe('Collection actions, promises and Pendientes', () => {
       const items = byKey(res);
       expect(items.payments_to_approve.count).toBe(1);
       expect(items.promises_due_today.count).toBe(1);
-      expect(items.promises_broken.count).toBe(1);
-      expect(items.contracts_in_arrears.count).toBe(1);
+      expect(items.promises_broken.count).toBe(0);
+      expect(items.clients_in_arrears.count).toBe(1);
       expect(items.contracts_without_plan.count).toBe(2);
       expect(items.reservations_expiring.count).toBe(1);
     });
@@ -183,10 +228,10 @@ describe('Collection actions, promises and Pendientes', () => {
       const res = await request(app).get(`/api/dashboard/pending?${q(a)}`).set('Authorization', `Bearer ${seller.token}`);
       const items = byKey(res);
       expect(items.payments_to_approve).toBeUndefined();
-      expect(items.my_contracts_in_arrears.count).toBe(1);
+      expect(items.my_clients_in_arrears.count).toBe(1);
       expect(items.my_reservations_expiring.count).toBe(1);
       const other = byKey(await request(app).get(`/api/dashboard/pending?${q(a)}`).set('Authorization', `Bearer ${otherSeller.token}`));
-      expect(other.my_contracts_in_arrears.count).toBe(0);
+      expect(other.my_clients_in_arrears.count).toBe(0);
       expect(other.my_reservations_expiring.count).toBe(0);
     });
 

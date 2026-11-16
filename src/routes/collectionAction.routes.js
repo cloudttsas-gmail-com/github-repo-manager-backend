@@ -8,7 +8,7 @@ import { tenantMiddleware } from '../middleware/tenant.js';
 import { companyMiddleware } from '../middleware/company.js';
 import { PERMISSIONS } from '../config/permissions.js';
 import { parseBusinessDate } from '../utils/dates.js';
-import { SELLER_ROLES, sellerClientIds, withPromiseStates } from '../services/collectionActions.service.js';
+import { BROKEN_WINDOW_DAYS, MAX_PROMISE_DAYS, SELLER_ROLES, endOfBogotaDay, sellerClientIds, withPromiseStates } from '../services/collectionActions.service.js';
 import { startOfBogotaDay } from '../services/statementSummary.service.js';
 
 const router = express.Router();
@@ -16,12 +16,15 @@ const router = express.Router();
 router.use(protect);
 router.use(tenantMiddleware);
 
-const PROMISE_STATES = ['vigente', 'cumplida', 'incumplida'];
+const PROMISE_STATES = ['vigente', 'en_revision', 'cumplida', 'incumplida', 'reemplazada'];
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * GET /api/collection-actions?companyId=&clientId=&promise=vigente|cumplida|incumplida&page=&limit=
- * The project's collection actions, newest first, each promise with its state. Sellers only see the
- * actions on the clients of their sales. With `promise`, only actions carrying a promise in that state.
+ * GET /api/collection-actions?companyId=&clientId=&promise=<state>&due=today&page=&limit=
+ * The project's collection actions, newest first, each promise with its state (see withPromiseStates).
+ * Sellers only see the actions on their clients. With `promise`, only promises in that state (broken
+ * and replaced ones from the last BROKEN_WINDOW_DAYS days, as Pendientes counts them); `due=today`,
+ * the open ones due today.
  */
 router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP), async (req, res, next) => {
   try {
@@ -40,24 +43,41 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP)
     }
 
     const promise = PROMISE_STATES.includes(req.query.promise) ? req.query.promise : null;
-    if (promise) filter['promise.dueDate'] = { $exists: true };
+    const dueToday = req.query.due === 'today';
+    const today = startOfBogotaDay();
+    if (promise || dueToday) {
+      // Narrow by date in the query; the state itself comes from the payments
+      const due = { $exists: true };
+      if (dueToday) Object.assign(due, { $gte: today, $lte: endOfBogotaDay(today) });
+      else if (promise === 'vigente' || promise === 'en_revision') due.$gte = new Date(today.getTime() - BROKEN_WINDOW_DAYS * DAY_MS);
+      else if (promise === 'incumplida' || promise === 'reemplazada') Object.assign(due, { $lt: today, $gte: new Date(today.getTime() - BROKEN_WINDOW_DAYS * DAY_MS) });
+      filter['promise.dueDate'] = due;
+    }
 
     const query = CollectionAction.find(filter)
-      .sort(promise ? { 'promise.dueDate': 1 } : { createdAt: -1 })
+      .sort(promise || dueToday ? { 'promise.dueDate': promise === 'incumplida' || promise === 'cumplida' ? -1 : 1, createdAt: -1 } : { createdAt: -1 })
       .populate('clientId', 'name idNumber phone')
       .lean();
 
     let rows;
     let total;
-    if (promise) {
-      // The state is worked out from payments, so promises are filtered after reading them
-      const all = await withPromiseStates(await query.limit(1000), { tenantId, companyId });
-      const matching = all.filter((action) => action.promiseState === promise);
+    if (promise || dueToday) {
+      const found = await query.limit(1000);
+      // Every promise of those clients decides which payment goes to which promise
+      const history = found.length
+        ? await CollectionAction.find({ tenantId, companyId, clientId: { $in: [...new Set(found.map((a) => String(a.clientId?._id || a.clientId)))] }, 'promise.dueDate': { $exists: true } }).lean()
+        : [];
+      const all = await withPromiseStates(found, { tenantId, companyId }, new Date(), history);
+      const matching = all.filter((action) => (promise ? action.promiseState === promise : true) && (!dueToday || action.promiseState === 'vigente'));
       total = matching.length;
       rows = matching.slice((page - 1) * limit, page * limit);
     } else {
+      const list = await query.skip((page - 1) * limit).limit(limit);
+      const history = list.some((a) => a.promise?.dueDate)
+        ? await CollectionAction.find({ tenantId, companyId, clientId: { $in: [...new Set(list.map((a) => String(a.clientId?._id || a.clientId)))] }, 'promise.dueDate': { $exists: true } }).lean()
+        : [];
       [rows, total] = await Promise.all([
-        query.skip((page - 1) * limit).limit(limit).then((list) => withPromiseStates(list, { tenantId, companyId })),
+        withPromiseStates(list, { tenantId, companyId }, new Date(), history),
         CollectionAction.countDocuments(filter),
       ]);
     }
@@ -84,6 +104,8 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP
     const { tenantId, companyId, role, userId, fullName } = req.user;
     const { clientId, contractId, channel, result, notes, promise } = req.body;
 
+    // Agents only look (as in the rest of the panel)
+    if (role === 'agent') return res.status(403).json({ success: false, message: 'Tu rol solo puede ver las gestiones' });
     if (!ACTION_CHANNELS.includes(channel)) return res.status(400).json({ success: false, message: 'Elige el medio de la gestión' });
     if (!ACTION_RESULTS.includes(result)) return res.status(400).json({ success: false, message: 'Elige el resultado de la gestión' });
     if (!mongoose.isValidObjectId(clientId)) return res.status(400).json({ success: false, message: 'Elige el cliente' });
@@ -107,8 +129,9 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP
       const amount = Number(promise?.amount);
       const dueDate = promise?.dueDate ? parseBusinessDate(promise.dueDate, null) : null;
       if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'Escribe cuánto prometió pagar' });
-      if (!dueDate) return res.status(400).json({ success: false, message: 'Escribe la fecha del compromiso' });
+      if (!dueDate || Number.isNaN(dueDate.getTime())) return res.status(400).json({ success: false, message: 'Escribe la fecha del compromiso' });
       if (dueDate < startOfBogotaDay()) return res.status(400).json({ success: false, message: 'La fecha del compromiso no puede ser anterior a hoy' });
+      if (dueDate > new Date(startOfBogotaDay().getTime() + MAX_PROMISE_DAYS * DAY_MS)) return res.status(400).json({ success: false, message: `El compromiso puede ser hasta ${MAX_PROMISE_DAYS} días desde hoy` });
       promiseData = { amount, dueDate };
     }
 

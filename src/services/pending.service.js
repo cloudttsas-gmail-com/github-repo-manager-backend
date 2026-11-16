@@ -28,8 +28,18 @@ const overdueContracts = async ({ tenantId, companyId, contractIds }, now) => {
     { $match: { pending: { $gt: 0 } } },
     { $group: { _id: null, amount: { $sum: '$pending' }, contracts: { $addToSet: '$contract' }, oldest: { $min: '$dueDate' } } },
   ]);
-  return { count: row?.contracts?.length || 0, amount: row?.amount || 0, oldest: row?.oldest || null };
+  // Counted by client, like Cartera › En mora (a client with two late contracts is one row there)
+  const clients = row?.contracts?.length ? await Contract.distinct('client', { _id: { $in: row.contracts } }) : [];
+  return { count: clients.length, amount: row?.amount || 0, oldest: row?.oldest || null };
 };
+
+/** Contracts that never got their payment plan (cancelled ones aside) */
+export const contractsWithoutPlan = async ({ tenantId, companyId }) => Contract.aggregate([
+  { $match: { tenantId: toId(tenantId), companyId: toId(companyId), status: { $not: /cancel|anulad|desist/i } } },
+  { $lookup: { from: 'quotas', localField: '_id', foreignField: 'contract', as: 'quotas', pipeline: [{ $limit: 1 }, { $project: { _id: 1 } }] } },
+  { $match: { quotas: { $size: 0 } } },
+  { $project: { client: 1, createdAt: 1 } },
+]);
 
 const commissionCount = async ({ companyId, status, sellerId }) => {
   const match = { companyId: toId(companyId), 'installments.status': status };
@@ -97,41 +107,41 @@ export const buildPendingItems = async ({ tenantId, companyId, role, userId }, n
   if (can(PERMISSIONS.CARTERA_DASHBOARD) || isSeller) {
     tasks.push((async () => {
       const result = await overdueContracts({ tenantId, companyId, contractIds: sellerContracts }, now);
-      items.push({ key: isSeller ? 'my_contracts_in_arrears' : 'contracts_in_arrears', ...result });
+      items.push({ key: isSeller ? 'my_clients_in_arrears' : 'clients_in_arrears', ...result });
     })());
   }
 
   if (can(PERMISSIONS.CLIENTES_EDIT) && !isSeller) {
     tasks.push((async () => {
-      const [row] = await Contract.aggregate([
-        { $match: { tenantId: toId(tenantId), companyId: toId(companyId) } },
-        { $lookup: { from: 'quotas', localField: '_id', foreignField: 'contract', as: 'quotas', pipeline: [{ $limit: 1 }, { $project: { _id: 1 } }] } },
-        { $match: { quotas: { $size: 0 } } },
-        { $group: { _id: null, count: { $sum: 1 }, oldest: { $min: '$createdAt' } } },
-      ]);
-      items.push({ key: 'contracts_without_plan', count: row?.count || 0, oldest: row?.oldest || null });
+      const rows = await contractsWithoutPlan({ tenantId, companyId });
+      items.push({ key: 'contracts_without_plan', count: rows.length, oldest: rows.reduce((min, row) => (!min || row.createdAt < min ? row.createdAt : min), null) });
     })());
   }
 
   if (can(PERMISSIONS.LOTES_VIEW)) {
-    tasks.push((async () => {
-      const filter = {
-        tenantId,
-        companyId,
-        isDeleted: { $ne: true },
-        status: { $in: ['apartado', 'separado'] },
-        expiresAt: { $lte: new Date(now.getTime() + RESERVATION_WARNING_DAYS * DAY_MS) },
-      };
-      if (isSeller) filter.sellerId = userId;
-      const [count, oldest] = await Promise.all([
-        Lot.countDocuments(filter),
-        Lot.findOne(filter).sort({ expiresAt: 1 }).select('expiresAt').lean(),
-      ]);
-      items.push({ key: isSeller ? 'my_reservations_expiring' : 'reservations_expiring', count, oldest: oldest?.expiresAt || null });
-    })());
+    // Apartados and separados apart, each linking to its own filter; already expired ones are released
+    // the next time lots are read, so they don't count
+    for (const status of ['apartado', 'separado']) {
+      tasks.push((async () => {
+        const filter = {
+          tenantId,
+          companyId,
+          isDeleted: { $ne: true },
+          status,
+          expiresAt: { $gte: now, $lte: new Date(now.getTime() + RESERVATION_WARNING_DAYS * DAY_MS) },
+        };
+        if (isSeller) filter.sellerId = userId;
+        const [count, oldest] = await Promise.all([
+          Lot.countDocuments(filter),
+          Lot.findOne(filter).sort({ expiresAt: 1 }).select('expiresAt').lean(),
+        ]);
+        items.push({ key: `${isSeller ? 'my_' : ''}${status === 'apartado' ? 'reservations' : 'separations'}_expiring`, count, oldest: oldest?.expiresAt || null });
+      })());
+    }
   }
 
-  if (can(PERMISSIONS.COMISIONES_RADICAR)) {
+  // Their own commissions: only for sellers (admins hold every permission but file none)
+  if (can(PERMISSIONS.COMISIONES_RADICAR) && isSeller) {
     tasks.push((async () => {
       const [available, rejected] = await Promise.all([
         commissionCount({ companyId, status: 'AVAILABLE', sellerId: userId }),
