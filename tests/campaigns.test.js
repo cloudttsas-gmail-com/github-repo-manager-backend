@@ -106,6 +106,7 @@ describe('Templates a send can use', () => {
     expect(analyzeTemplate({
       ...TEMPLATES[0], name: 'z', components: [{ type: 'BODY', text: 'Hola' }, { type: 'BUTTONS', buttons: [{ type: 'URL', url: 'https://x.co/{{1}}' }] }],
     }).reason).toMatch(/enlace variable/);
+    expect(analyzeTemplate({ ...TEMPLATES[0], name: 'c', components: [{ type: 'BODY', text: 'Hola' }, { type: 'CAROUSEL', cards: [] }] }).reason).toMatch(/carrusel/);
   });
 });
 

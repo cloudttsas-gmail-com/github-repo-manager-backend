@@ -24,6 +24,8 @@ export const analyzeTemplate = (template, mediaByKey = new Map()) => {
 
   if (template.status !== 'APPROVED') return { ...result, reason: 'Todavía no está aprobada por Meta.' };
   if (template.category === 'AUTHENTICATION') return { ...result, reason: 'Las plantillas de autenticación son solo para códigos.' };
+  if (components.some((c) => !['HEADER', 'BODY', 'FOOTER', 'BUTTONS'].includes(c.type))) return { ...result, reason: 'Tiene partes que Operix no sabe llenar (carrusel u oferta).' };
+  if (header && !['TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT'].includes(header.format)) return { ...result, reason: 'El encabezado es de un tipo que Operix no sabe llenar.' };
   if (String(template.name).startsWith('operix_')) return { ...result, reason: 'Es un aviso automático de Operix.' };
   if (variables.some((v) => /^\d+$/.test(v))) return { ...result, reason: 'Usa datos numerados ({{1}}); Operix solo llena los de «Insertar dato».' };
   const unknown = variables.find((v) => !FIELD_KEYS.has(v));
