@@ -32,4 +32,6 @@ export const publicBankAccounts = (company) => (company?.bankAccounts || [])
     tipoCuenta: acc.tipoCuenta,
     numeroCuenta: acc.numeroCuenta,
     titular: acc.titular,
+    // The QR image buyers scan to pay (public on purpose); the accounting account never leaves
+    qrCode: acc.qrCode || null,
   }));

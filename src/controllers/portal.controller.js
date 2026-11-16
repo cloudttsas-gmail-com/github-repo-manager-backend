@@ -11,7 +11,7 @@ import AppError from '../utils/AppError.js';
 import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
-import { loadStatement, toStatementPdfData, buildStatementSummary } from '../services/statementSummary.service.js';
+import { loadStatement, toStatementPdfData, buildStatementSummary, lotLabel } from '../services/statementSummary.service.js';
 import { recordDelivery } from './statement.controller.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
@@ -180,6 +180,11 @@ export const getPortalSummary = async (req, res, next) => {
 
     const contractQuotas = await Quota.find({ contract: { $in: contracts.map((c) => c._id) }, tenantId });
     const clientContact = await Client.findOne({ _id: clientId, tenantId }).select('email');
+    // Payments reported and not yet reviewed, so Inicio says «en revisión» instead of asking again
+    const inReview = await PaymentAttempt.aggregate([
+      { $match: { clientId: new mongoose.Types.ObjectId(String(clientId)), tenantId: new mongoose.Types.ObjectId(String(tenantId)), status: 'PENDIENTE' } },
+      { $group: { _id: '$contractId', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+    ]);
 
     const contractsData = contracts.map(c => {
       const lotNumber = c.lot?.lotNumber;
@@ -199,6 +204,7 @@ export const getPortalSummary = async (req, res, next) => {
         projectName: c.companyId?.name || c.lot?.companyId?.name || '',
         hasEmail: !!clientContact?.email,
         statement,
+        inReview: (({ count = 0, amount = 0 } = {}) => ({ count, amount }))(inReview.find((row) => String(row._id) === String(c._id))),
       };
     });
 
@@ -312,7 +318,13 @@ export const getMyPayments = async (req, res, next) => {
         referencia: referenceName,
         metodoPago: a.paymentMethod || 'Consignación',
         createdAt: a.createdAt,
-        updatedAt: a.updatedAt
+        updatedAt: a.updatedAt,
+        // For «Mis pagos»: when it was paid, where, for which property and, if rejected, why
+        fechaPago: a.fechaPago || a.createdAt,
+        banco: a.banco || null,
+        contractId: a.contractId?._id || null,
+        lotLabel: a.contractId?.lot ? lotLabel(a.contractId.lot) : null,
+        rejectedReason: a.status === 'RECHAZADO' ? (a.rejectedReason || '') : null,
       };
     });
 
