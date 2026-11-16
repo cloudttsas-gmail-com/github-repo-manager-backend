@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Quota from '../models/Quota.js';
 import Contract from '../models/Contract.js';
 import Client from '../models/Client.js';
@@ -17,6 +18,7 @@ import { claimPaymentRequest } from '../utils/idempotency.js';
 import { recalculatePlanAfterInitialPayment } from '../services/paymentPlan.service.js';
 import { applyPaymentToQuotas, isAppliedToQuotas, revertAppliedPayment } from '../services/paymentApplication.service.js';
 import { parsePositiveAmount } from '../utils/math.js';
+import { escapeRegex } from '../utils/regex.js';
 
 /**
  * Get all quotas (payments) for a given company with server-side pagination and filtering.
@@ -28,7 +30,7 @@ export const getPayments = async (req, res, next) => {
     // The listing no longer creates payments from quotas with money and no payment: those
     // quotas are now mostly the cascade of an approval, and it created phantom payments
 
-    const { page = 1, limit = 12, search, status, sortBy, order } = req.query;
+    const { page = 1, limit = 12, search, status, sortBy, order, clientId } = req.query;
 
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
@@ -73,14 +75,20 @@ export const getPayments = async (req, res, next) => {
       query.status = requestedStatus;
     }
 
-    // Search by client name or idNumber
-    if (search && search.trim()) {
+    // One client's payments (the client's record) takes the place of the search
+    if (clientId) {
+      if (!mongoose.isValidObjectId(clientId)) return next(new AppError('Cliente no encontrado', 404));
+      query.clientId = new mongoose.Types.ObjectId(clientId);
+      scope.clientId = query.clientId;
+    } else if (search && search.trim()) {
+      // Search by client name or idNumber
+      const pattern = escapeRegex(search.trim());
       const matchingClients = await Client.find({
         tenantId,
         companyId,
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { idNumber: { $regex: search, $options: 'i' } },
+          { name: { $regex: pattern, $options: 'i' } },
+          { idNumber: { $regex: pattern, $options: 'i' } },
         ],
       }).select('_id');
 

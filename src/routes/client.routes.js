@@ -14,6 +14,7 @@ import User from '../models/User.js';
 import { publicLinkUrl } from '../utils/publicLinks.js';
 import { buildStatementSummary, startOfBogotaDay } from '../services/statementSummary.service.js';
 import { sendClientStatement, shareClientStatementLink, getClientStatementDeliveries } from '../controllers/statement.controller.js';
+import { escapeRegex } from '../utils/regex.js';
 
 const router = express.Router();
 
@@ -54,11 +55,12 @@ const buildClientRowsPipeline = async (req, { search = '', behaviorFilter } = {}
   }
   
   if (search) {
+    const pattern = escapeRegex(search);
     const searchFilter = {
       $or: [
-        { name: { $regex: search, $options: 'i' } },
-        { idNumber: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
+        { name: { $regex: pattern, $options: 'i' } },
+        { idNumber: { $regex: pattern, $options: 'i' } },
+        { phone: { $regex: pattern, $options: 'i' } },
       ],
     };
 
@@ -323,10 +325,17 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
     const { tenantId, companyId, role, userId } = req.user;
     const { id } = req.params;
 
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
+    }
     const query = { _id: id, tenantId, companyId };
-    if (role === 'vendedor' || role === 'ejecutivo_comercial' || role === 'agent') {
+    // Sellers see the clients of their sales and the ones they created, as in the list, and only
+    // their own contracts (the statement routes already limit them the same way)
+    const isSeller = role === 'vendedor' || role === 'ejecutivo_comercial' || role === 'agent';
+    if (isSeller) {
       const hasContract = await Contract.exists({ client: id, sellerId: userId, tenantId, companyId });
-      if (!hasContract) {
+      const created = await Client.exists({ _id: id, tenantId, companyId, createdBy: userId });
+      if (!hasContract && !created) {
         return res.status(403).json({ success: false, message: 'No tienes permiso para ver este cliente' });
       }
     }
@@ -337,7 +346,7 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
     }
 
     // Get contracts for this client
-    const contracts = await Contract.find({ client: id, tenantId, companyId })
+    const contracts = await Contract.find({ client: id, tenantId, companyId, ...(isSeller && { sellerId: userId }) })
       .populate('lot')
       .populate({
         path: 'sellerId',
@@ -359,7 +368,8 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
       }).sort({ type: 1, number: 1 });
       
       // Same numbers as the PDF, the portal and the messages
-      const { quotas: _summaryQuotas, ...statement } = buildStatementSummary(contract, allQuotas, { apiUrl });
+      // The summary's quotas carry the real state (mora by due date, abonada) and label (Separación)
+      const statement = buildStatementSummary(contract, allQuotas, { apiUrl });
       const { initial, normal } = statement.breakdown;
 
       return {

@@ -13,6 +13,7 @@ import { PERMISSIONS } from '../config/permissions.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
 import { companyMiddleware } from '../middleware/company.js';
 import mongoose from 'mongoose';
+import { buildPendingItems } from '../services/pending.service.js';
 
 const router = express.Router();
 
@@ -303,6 +304,19 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * GET /api/dashboard/pending?companyId=
+ * What waits for the person looking, by role (Inicio › Pendientes and the menu counters).
+ */
+router.get('/pending', companyMiddleware, async (req, res, next) => {
+  try {
+    const items = await buildPendingItems(req.user);
+    res.json({ success: true, data: { items, generatedAt: new Date() } });
+  } catch (error) {
+    next(error);
   }
 });
 

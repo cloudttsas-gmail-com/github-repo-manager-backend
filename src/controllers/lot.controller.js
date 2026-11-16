@@ -11,6 +11,7 @@ import AppError from '../utils/AppError.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { buildSalePlan, PLAN_RULES_VERSION, toCalendarDate, toISODate } from '../services/paymentPlanRules.js';
 import { getPaymentPlanPolicy } from '../services/paymentPlan.service.js';
+import { escapeRegex } from '../utils/regex.js';
 
 export const createLot = async (req, res, next) => {
   try {
@@ -165,11 +166,11 @@ export const getLots = async (req, res, next) => {
     if (search) {
       const searchFilter = {
         $or: [
-          { stage: { $regex: search, $options: 'i' } },
-          { manzana: { $regex: search, $options: 'i' } },
-          { nomenclature: { $regex: search, $options: 'i' } },
-          { lotNumber: { $regex: search, $options: 'i' } },
-          { reference: { $regex: search, $options: 'i' } },
+          { stage: { $regex: escapeRegex(search), $options: 'i' } },
+          { manzana: { $regex: escapeRegex(search), $options: 'i' } },
+          { nomenclature: { $regex: escapeRegex(search), $options: 'i' } },
+          { lotNumber: { $regex: escapeRegex(search), $options: 'i' } },
+          { reference: { $regex: escapeRegex(search), $options: 'i' } },
         ],
       };
 
@@ -252,7 +253,13 @@ export const getLot = async (req, res, next) => {
     // Run lazy cleanup for this specific tenant/company
     await checkLotExpirations(tenantId, companyId);
 
-    const lot = await Lot.findOne({ _id: req.params.id, tenantId })
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Lote no encontrado' });
+    }
+    // With ?companyId= (the panel's record) only that project's lot; older callers keep the tenant scope
+    const scope = { _id: req.params.id, tenantId };
+    if (req.query.companyId && mongoose.isValidObjectId(req.query.companyId)) scope.companyId = req.query.companyId;
+    const lot = await Lot.findOne(scope)
       .populate({
         path: 'sellerId',
         populate: { path: 'accountId', select: 'fullName email' },
@@ -380,7 +387,13 @@ export const deleteLot = async (req, res, next) => {
     const { tenantId, userId } = req.user;
     const { reason } = req.body;
 
-    const lot = await Lot.findOne({ _id: req.params.id, tenantId });
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Lote no encontrado' });
+    }
+    // With ?companyId= (the panel's record) only that project's lot; older callers keep the tenant scope
+    const scope = { _id: req.params.id, tenantId };
+    if (req.query.companyId && mongoose.isValidObjectId(req.query.companyId)) scope.companyId = req.query.companyId;
+    const lot = await Lot.findOne(scope);
 
     if (!lot) {
       return res.status(404).json({
@@ -452,7 +465,13 @@ export const restoreLot = async (req, res, next) => {
   try {
     const { tenantId } = req.user;
 
-    const lot = await Lot.findOne({ _id: req.params.id, tenantId });
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Lote no encontrado' });
+    }
+    // With ?companyId= (the panel's record) only that project's lot; older callers keep the tenant scope
+    const scope = { _id: req.params.id, tenantId };
+    if (req.query.companyId && mongoose.isValidObjectId(req.query.companyId)) scope.companyId = req.query.companyId;
+    const lot = await Lot.findOne(scope);
 
     if (!lot) {
       return res.status(404).json({
@@ -573,9 +592,9 @@ export const getLotsPublic = async (req, res, next) => {
     let query = { companyId, status: 'disponible', isDeleted: { $ne: true } };
     if (search) {
       query.$or = [
-        { stage: { $regex: search, $options: 'i' } },
-        { nomenclature: { $regex: search, $options: 'i' } },
-        { lotNumber: { $regex: search, $options: 'i' } },
+        { stage: { $regex: escapeRegex(search), $options: 'i' } },
+        { nomenclature: { $regex: escapeRegex(search), $options: 'i' } },
+        { lotNumber: { $regex: escapeRegex(search), $options: 'i' } },
       ];
     }
 
