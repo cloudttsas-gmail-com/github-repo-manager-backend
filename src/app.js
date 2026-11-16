@@ -30,6 +30,7 @@ import paymentScheduleRoutes from './routes/paymentSchedule.routes.js';
 import paymentPlanRoutes from './routes/paymentPlan.routes.js';
 import contractRoutes from './routes/contract.routes.js';
 import collectionActionRoutes from './routes/collectionAction.routes.js';
+import campaignRoutes from './routes/campaign.routes.js';
 import aiAgentToolRoutes from './routes/ai.routes.js';
 import knowledgeRoutes from './routes/knowledge.routes.js';
 import escalationRoutes from './routes/escalation.routes.js';
@@ -190,6 +191,7 @@ app.use('/api/payment-schedule', paymentScheduleRoutes);
 app.use('/api/payment-plan', paymentPlanRoutes);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/collection-actions', collectionActionRoutes);
+app.use('/api/campaigns', campaignRoutes);
 
 // 404 handler
 app.use((req, res) => {

@@ -495,6 +495,31 @@ router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREAT
   }
 });
 
+const CONSENT_STATUSES = ['autorizado', 'sin_registro', 'baja'];
+
+/**
+ * PUT /clients/:id/contact-consent { status }
+ * Whether the buyer accepts WhatsApp sends: autorizado, sin_registro or baja. A buyer who opted out by
+ * WhatsApp shows here too; the team records it when the buyer asks by another channel.
+ */
+router.put('/:id/contact-consent', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_EDIT), async (req, res) => {
+  try {
+    const { tenantId, companyId, userId } = req.user;
+    const status = req.body?.status;
+    if (!CONSENT_STATUSES.includes(status)) return res.status(400).json({ success: false, message: 'Estado de autorización no válido' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
+    const client = await Client.findOne({ _id: req.params.id, tenantId, companyId });
+    if (!client) return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
+    const before = client.contactConsent?.status || 'sin_registro';
+    client.contactConsent = { status, updatedAt: new Date(), source: 'panel', updatedBy: userId };
+    await client.save();
+    await logAudit(req, { action: 'UPDATE_CONTACT_CONSENT', module: 'CLIENTS', targetId: client._id, details: { before, after: status } });
+    res.json({ success: true, data: { contactConsent: client.contactConsent } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // DELETE /clients/:id
 router.delete('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_EXPORT), async (req, res) => {
   try {

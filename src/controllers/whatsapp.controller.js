@@ -1,4 +1,5 @@
 import { whatsappService } from '../services/whatsapp.service.js';
+import CampaignRecipient from '../models/CampaignRecipient.js';
 import {
   companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, templateFieldsFor,
   prepareHeaderSample, DOCUMENT_SOURCES, projectSamples,
@@ -156,15 +157,58 @@ const processWebhookEvent = async (body) => {
       status: 'received',
     });
     console.log(`[WHATSAPP WEBHOOK] inbound ${messageData.type} message stored`);
+    await recordCampaignReply(client, text);
     return;
   }
 
-  // Status updates (sent, delivered, read)
-  const status = value.statuses?.[0];
-  if (status) {
+  // Status updates (sent, delivered, read, failed)
+  for (const status of value.statuses || []) {
     await Message.findOneAndUpdate({ waId: status.id }, { status: status.status });
+    await recordCampaignStatus(status);
     console.log(`[WHATSAPP WEBHOOK] status ${status.status}`);
   }
+};
+
+const REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// A reply that is only one of these words opts the buyer out of messages
+const OPT_OUT = /^(baja|stop|parar|no m[aá]s|cancelar|no quiero (recibir )?(m[aá]s )?mensajes)$/i;
+
+/** A buyer answered: the send that reached them in the last week gets the reply, and BAJA opts them out. */
+const recordCampaignReply = async (client, text) => {
+  const optOut = OPT_OUT.test(String(text || '').trim().replace(/[.!¡]+/g, ''));
+  const now = new Date();
+  const latest = await CampaignRecipient.findOne({ clientId: client._id, sentAt: { $gte: new Date(now.getTime() - REPLY_WINDOW_MS) } }).sort({ sentAt: -1 });
+  if (latest) {
+    if (!latest.repliedAt) latest.repliedAt = now;
+    if (optOut && !latest.optedOutAt) latest.optedOutAt = now;
+    await latest.save();
+  }
+  if (optOut && client.contactConsent?.status !== 'baja') {
+    await Client.updateOne({ _id: client._id }, { contactConsent: { status: 'baja', updatedAt: now, source: 'whatsapp' } });
+    console.log('[WHATSAPP WEBHOOK] a buyer opted out of messages');
+  }
+};
+
+// Later states never step back (a late «delivered» after «read»)
+const STATUS_ORDER = { sent: 1, delivered: 2, read: 3 };
+
+/** Meta's delivery report for a message of a send. */
+const recordCampaignStatus = async (status) => {
+  const at = status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date();
+  if (status.status === 'failed') {
+    const error = status.errors?.[0];
+    await CampaignRecipient.updateOne({ waMessageId: status.id }, {
+      status: 'failed',
+      error: error ? `${error.title || error.message || 'Error'}${error.code ? ` (${error.code})` : ''}` : 'Meta no entregó el mensaje',
+    });
+    return;
+  }
+  const rank = STATUS_ORDER[status.status];
+  if (!rank || rank < 2) return;
+  const earlier = Object.keys(STATUS_ORDER).filter((s) => STATUS_ORDER[s] < rank);
+  const update = { status: status.status, [`${status.status}At`]: at };
+  await CampaignRecipient.updateOne({ waMessageId: status.id, status: { $in: earlier } }, update);
+  if (status.status === 'read') await CampaignRecipient.updateOne({ waMessageId: status.id, deliveredAt: null }, { deliveredAt: at });
 };
 
 /**

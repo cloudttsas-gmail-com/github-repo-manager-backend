@@ -62,6 +62,13 @@ const clientSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  // Whether the buyer accepts messages: autorizado, sin_registro (never asked) or baja (opted out)
+  contactConsent: {
+    status: { type: String, enum: ['autorizado', 'sin_registro', 'baja'], default: 'sin_registro' },
+    updatedAt: Date,
+    source: { type: String, enum: ['panel', 'whatsapp', 'portal', 'importacion'] },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
   excelRowId: Number,
 }, { timestamps: true });
 

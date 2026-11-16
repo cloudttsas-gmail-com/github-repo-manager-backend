@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import app from './src/app.js';
 import connectDB from './src/config/database.js';
+import { startCampaignWorker } from './src/services/campaignSender.service.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -15,6 +16,8 @@ const startServer = async () => {
       app.listen(PORT, () => {
         console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
       });
+      // WhatsApp sends go out from this process (there is no other scheduler)
+      startCampaignWorker();
     }
   } catch (error) {
     console.error('Failed to start database connection:', error.message);
