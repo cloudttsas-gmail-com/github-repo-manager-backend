@@ -35,7 +35,8 @@ router.post('/excel', protect, checkPermission(PERMISSIONS.IMPORT_MANAGE), tenan
 router.post('/excel-lots', protect, checkPermission(PERMISSIONS.IMPORT_MANAGE), tenantMiddleware, upload.single('file'), companyMiddleware, importLotsOnly);
 
 // Route for Excel export (requires company context)
-router.get('/export', protect, tenantMiddleware, companyMiddleware, exportExcel);
+// The whole project's buyers, contracts and quotas: only roles that may export clients
+router.get('/export', protect, tenantMiddleware, companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_EXPORT), exportExcel);
 
 // Route for Excel template download (public)
 router.get('/template', downloadTemplate);

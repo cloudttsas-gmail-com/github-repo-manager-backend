@@ -320,7 +320,6 @@ router.get('/pending', companyMiddleware, async (req, res, next) => {
   }
 });
 
-router.get('/ranking-morosos', (req, res) => res.json({ success: true, data: [] }));
 // Collected per month (approved payments) against what fell due that month, last 6 months
 router.get('/recaudo-mensual', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DASHBOARD), async (req, res) => {
   try {
@@ -349,6 +348,5 @@ router.get('/recaudo-mensual', companyMiddleware, checkPermission(PERMISSIONS.CA
     res.status(500).json({ success: false, message: error.message });
   }
 });
-router.get('/comportamiento', (req, res) => res.json({ success: true, data: [] }));
 
 export default router;
