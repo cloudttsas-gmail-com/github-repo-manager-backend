@@ -43,7 +43,7 @@ export const resolveContactPolicy = (policy = {}) => {
 };
 
 /** Checks a policy sent by the panel; throws a message for the first wrong field. */
-export const validateContactPolicy = (input = {}) => {
+export const validateContactPolicy = (input = {}, current = {}) => {
   const out = {};
   for (const key of ['weekdayStart', 'weekdayEnd', 'saturdayStart', 'saturdayEnd']) {
     if (input[key] === undefined) continue;
@@ -52,14 +52,14 @@ export const validateContactPolicy = (input = {}) => {
     out[key] = value;
   }
   for (const key of ['allowSundays', 'allowHolidays']) {
-    if (input[key] !== undefined) out[key] = Boolean(input[key]);
+    if (input[key] !== undefined) out[key] = input[key] === true || input[key] === 'true';
   }
   if (input.weeklyLimit !== undefined) {
     const value = Number(input.weeklyLimit);
     if (!Number.isInteger(value) || value < 1 || value > 7) throw new Error('El límite semanal va de 1 a 7 mensajes.');
     out.weeklyLimit = value;
   }
-  const merged = { ...DEFAULT_CONTACT_POLICY, ...out };
+  const merged = { ...resolveContactPolicy(current), ...out };
   if (merged.weekdayEnd <= merged.weekdayStart) throw new Error('El horario de lunes a viernes debe terminar después de empezar.');
   if (merged.saturdayEnd < merged.saturdayStart) throw new Error('El horario del sábado debe terminar después de empezar.');
   return out;
@@ -153,13 +153,13 @@ export const startOfBogotaWeek = (now = new Date()) => {
  * WhatsApp collection contacts of each client this week: messages of sends that went out and
  * collection actions recorded by WhatsApp. Returns a Map clientId → count.
  */
-export const weeklyWhatsAppContacts = async ({ tenantId, companyId, clientIds }, now = new Date()) => {
+export const weeklyWhatsAppContacts = async ({ tenantId, companyId, clientIds, excludeCampaignId }, now = new Date()) => {
   const since = startOfBogotaWeek(now);
   const ids = clientIds.map((id) => new mongoose.Types.ObjectId(String(id)));
   const scope = { tenantId: new mongoose.Types.ObjectId(String(tenantId)), companyId: new mongoose.Types.ObjectId(String(companyId)), clientId: { $in: ids } };
   const [sent, actions] = await Promise.all([
     CampaignRecipient.aggregate([
-      { $match: { ...scope, sentAt: { $gte: since } } },
+      { $match: { ...scope, sentAt: { $gte: since }, ...(excludeCampaignId ? { campaignId: { $ne: new mongoose.Types.ObjectId(String(excludeCampaignId)) } } : {}) } },
       { $group: { _id: '$clientId', count: { $sum: 1 } } },
     ]),
     CollectionAction.aggregate([

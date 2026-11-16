@@ -199,6 +199,37 @@ describe('Collection actions, promises and Pendientes', () => {
       await PaymentAttempt.deleteMany({ clientId: otherBuyer._id });
     });
 
+    it('a renegotiated nearer promise takes the payment first, and a promise on another contract replaces nothing', async () => {
+      // A: 60.000 due in 20 days (older); B: 30.000 due in 4 days (renegotiated later); one payment of 30.000
+      await CollectionAction.create([
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, contractId: otherContract._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 60000, dueDate: daysFromNow(20) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-5) },
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, contractId: otherContract._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 30000, dueDate: daysFromNow(4) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-2) },
+      ]);
+      await PaymentAttempt.create({
+        tenantId: a.tenantId, companyId: a.companyId, contractId: otherContract._id, clientId: otherBuyer._id, amount: 30000,
+        banco: 'Banco', paymentMethod: 'transferencia', fechaPago: new Date(), status: 'APROBADO',
+      });
+      const list = await request(app).get(`/api/collection-actions?${q(a)}&clientId=${otherBuyer._id}`).set('Authorization', `Bearer ${a.token}`);
+      const byAmount = Object.fromEntries(list.body.data.actions.map((x) => [x.promise.amount, x.promiseState]));
+      expect(byAmount).toEqual({ 30000: 'cumplida', 60000: 'vigente' });
+      await CollectionAction.deleteMany({ clientId: otherBuyer._id });
+      await PaymentAttempt.deleteMany({ clientId: otherBuyer._id });
+
+      // C1 broken on one contract; C2 on another contract of the same client does not replace it
+      const secondContract = await Contract.findOne({ client: otherBuyer._id, _id: { $ne: otherContract._id } });
+      await CollectionAction.create([
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, contractId: otherContract._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 10000, dueDate: daysFromNow(-2) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-10) },
+        { tenantId: a.tenantId, companyId: a.companyId, clientId: otherBuyer._id, contractId: secondContract._id, channel: 'llamada', result: 'promesa',
+          promise: { amount: 10000, dueDate: daysFromNow(3) }, createdBy: new mongoose.Types.ObjectId(), createdAt: daysFromNow(-6) },
+      ]);
+      const states = await request(app).get(`/api/collection-actions?${q(a)}&clientId=${otherBuyer._id}`).set('Authorization', `Bearer ${a.token}`);
+      expect(states.body.data.actions.map((x) => x.promiseState).sort()).toEqual(['incumplida', 'vigente']);
+      await CollectionAction.deleteMany({ clientId: otherBuyer._id });
+    });
+
     it('rejects promise dates beyond the limit and agents writing', async () => {
       const far = await request(app).post(`/api/collection-actions?${q(a)}`).set('Authorization', `Bearer ${a.token}`)
         .send({ clientId: buyer._id, channel: 'llamada', result: 'promesa', promise: { amount: 1000, dueDate: isoDay(daysFromNow(400)) } });
@@ -206,6 +237,11 @@ describe('Collection actions, promises and Pendientes', () => {
       const bad = await request(app).post(`/api/collection-actions?${q(a)}`).set('Authorization', `Bearer ${a.token}`)
         .send({ clientId: buyer._id, channel: 'llamada', result: 'promesa', promise: { amount: 1000, dueDate: '2026-13-45' } });
       expect(bad.statusCode).toBe(400);
+      // The last allowed day (today + 180) is accepted whole
+      const last = await request(app).post(`/api/collection-actions?${q(a)}`).set('Authorization', `Bearer ${a.token}`)
+        .send({ clientId: buyer._id, channel: 'llamada', result: 'promesa', promise: { amount: 1000, dueDate: isoDay(daysFromNow(180)) } });
+      expect(last.statusCode).toBe(201);
+      await CollectionAction.deleteOne({ _id: last.body.data._id });
     });
   });
 
@@ -220,7 +256,8 @@ describe('Collection actions, promises and Pendientes', () => {
       expect(items.promises_due_today.count).toBe(1);
       expect(items.promises_broken.count).toBe(0);
       expect(items.clients_in_arrears.count).toBe(1);
-      expect(items.contracts_without_plan.count).toBe(2);
+      // Two contracts without a plan of the same client: one row in Clientes › sin plan
+      expect(items.contracts_without_plan.count).toBe(1);
       expect(items.reservations_expiring.count).toBe(1);
     });
 

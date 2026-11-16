@@ -102,6 +102,8 @@ const MEDIA_TYPE = { IMAGE: 'image', VIDEO: 'video', DOCUMENT: 'document' };
 /** Link of the file a media header attaches for this buyer, or null when there is none. */
 const mediaLink = (media, { contract, lastPayment, apiUrl }) => {
   if (media.source === 'file') return media.fileUrl || null;
+  // Meta downloads the PDF itself: a relative link would fail every message
+  if (!/^https?:\/\//.test(apiUrl || '')) throw new Error('Falta API_URL en el servidor para adjuntar el documento.');
   if (media.source === 'estado_cuenta' || media.source === 'plan_pagos') return contract ? publicLinkUrl('statement', contract._id, apiUrl) : null;
   if (media.source === 'recibo') return lastPayment ? publicLinkUrl('receipt-attempt', lastPayment.id, apiUrl) : null;
   return null;

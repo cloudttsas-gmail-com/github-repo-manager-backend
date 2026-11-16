@@ -91,7 +91,9 @@ describe('Contact policy (Ley 2300 defaults)', () => {
     expect(startOfBogotaWeek(bogota('2026-11-22T23:00:00'))).toEqual(bogota('2026-11-16T00:00:00'));
     expect(() => validateContactPolicy({ weekdayStart: 20, weekdayEnd: 8 })).toThrow();
     expect(() => validateContactPolicy({ weeklyLimit: 0 })).toThrow();
-    expect(validateContactPolicy({ weeklyLimit: 2, allowSundays: 'yes' })).toEqual({ weeklyLimit: 2, allowSundays: true });
+    expect(validateContactPolicy({ weeklyLimit: 2, allowSundays: 'true', allowHolidays: 'false' })).toEqual({ weeklyLimit: 2, allowSundays: true, allowHolidays: false });
+    // Checked against the saved policy: only the saturday end changes, and it must stay after its start
+    expect(() => validateContactPolicy({ saturdayEnd: 9 }, { saturdayStart: 10 })).toThrow();
   });
 });
 
@@ -116,6 +118,7 @@ describe('Sends (/api/campaigns)', () => {
   let cartera;
   const buyers = {};
   const q = () => `companyId=${a.companyId}`;
+  const carteraToken = () => cartera;
   const original = {};
   const sent = [];
 
@@ -325,10 +328,32 @@ describe('Sends (/api/campaigns)', () => {
     expect(ok.body.data.policy).toMatchObject({ weeklyLimit: 2, weekdayStart: 7 });
   });
 
+  it('due-in-N-days filter works from any arrears choice and counts Bogotá days; shared numbers get one message', async () => {
+    const due = await request(app).post(`/api/campaigns/preview?${q()}`).set('Authorization', `Bearer ${a.token}`)
+      .send({ filters: { mora: 'en_mora', dueWithinDays: 5 } });
+    expect(due.body.data.sample.map((s) => s.name)).toEqual(['Comprador ontime']);
+
+    // A second buyer with the same mobile, written with spaces, is left out of the same send
+    const twin = await buyer('twin', '300 111 0002');
+    await quota('twin', 5);
+    const shared = await request(app).post(`/api/campaigns/preview?${q()}`).set('Authorization', `Bearer ${a.token}`)
+      .send({ filters: { mora: 'al_dia' } });
+    expect(shared.body.data.recipients).toBe(1);
+    expect(shared.body.data.excluded.find((e) => e.reason === 'duplicate_phone').count).toBe(1);
+    await Quota.deleteMany({ contract: twin.contract._id });
+    await Contract.deleteOne({ _id: twin.contract._id });
+    await Client.deleteOne({ _id: twin.client._id });
+  });
+
   it('records the buyer authorization from the panel', async () => {
     const bad = await request(app).put(`/api/clients/${buyers.optout.client._id}/contact-consent?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ status: 'quizas' });
     expect(bad.statusCode).toBe(400);
-    const ok = await request(app).put(`/api/clients/${buyers.optout.client._id}/contact-consent?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ status: 'autorizado' });
+    // Undoing an opt-out needs CONFIG_TENANT and a reason
+    const cartera = await request(app).put(`/api/clients/${buyers.optout.client._id}/contact-consent?${q()}`).set('Authorization', `Bearer ${carteraToken()}`).send({ status: 'autorizado', reason: 'Lo pidió por escrito' });
+    expect(cartera.statusCode).toBe(403);
+    const noReason = await request(app).put(`/api/clients/${buyers.optout.client._id}/contact-consent?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ status: 'autorizado' });
+    expect(noReason.statusCode).toBe(400);
+    const ok = await request(app).put(`/api/clients/${buyers.optout.client._id}/contact-consent?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ status: 'autorizado', reason: 'Lo pidió por escrito' });
     expect(ok.statusCode).toBe(200);
     expect(ok.body.data.contactConsent).toMatchObject({ status: 'autorizado', source: 'panel' });
   });

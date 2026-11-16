@@ -11,13 +11,14 @@ import AppError from '../utils/AppError.js';
 import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
-import { loadStatement, toStatementPdfData, buildStatementSummary, lotLabel } from '../services/statementSummary.service.js';
+import { loadStatement, toStatementPdfData, buildStatementSummary, lotLabel, quotaPendingAmount } from '../services/statementSummary.service.js';
 import { recordDelivery } from './statement.controller.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { publicLinkUrl } from '../utils/publicLinks.js';
 import { resolveBankChoice, publicBankAccounts } from '../utils/bankAccounts.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
 import { parsePositiveAmount } from '../utils/math.js';
+import { isAppliedToQuotas } from '../services/paymentApplication.service.js';
 
 /**
  * Get dashboard home data for the client portal
@@ -148,6 +149,8 @@ export const getPortalSummary = async (req, res, next) => {
       let statusStr = 'pending';
       if (a.status === 'APROBADO') statusStr = 'approved';
       if (a.status === 'RECHAZADO') statusStr = 'rejected';
+      // Pending rows from the migration were already on the quotas: not «in review»
+      if (a.status === 'PENDIENTE' && isAppliedToQuotas(a)) statusStr = 'registered';
 
       const lotNumber = a.contractId?.lot?.lotNumber;
       const stageName = a.contractId?.lot?.stage;
@@ -312,6 +315,8 @@ export const getMyPayments = async (req, res, next) => {
       let statusStr = 'pending';
       if (a.status === 'APROBADO') statusStr = 'approved';
       if (a.status === 'RECHAZADO') statusStr = 'rejected';
+      // Pending rows from the migration were already on the quotas: not «in review»
+      if (a.status === 'PENDIENTE' && isAppliedToQuotas(a)) statusStr = 'registered';
 
       const lotNumber = a.contractId?.lot?.lotNumber;
       const stageName = a.contractId?.lot?.stage;
@@ -353,14 +358,14 @@ export const getMyPayments = async (req, res, next) => {
 export const reportPortalPayment = async (req, res, next) => {
   try {
     const { clientId, tenantId } = req.user;
-    const { contractId, cuotaNumber, amount, banco, bankAccountId, paymentMethod, fechaPago, paymentType, requestId } = req.body;
+    const { contractId, quotaId, amount, banco, bankAccountId, paymentMethod, fechaPago, paymentType, requestId } = req.body;
     const file = req.file;
 
     if (!clientId) {
       return next(new AppError('No hay un cliente asociado a esta cuenta', 400));
     }
 
-    if (!contractId || !cuotaNumber || !amount || !(banco || bankAccountId) || !paymentMethod) {
+    if (!contractId || !amount || !(banco || bankAccountId) || !paymentMethod) {
       return next(new AppError('Todos los campos son requeridos', 400));
     }
 
@@ -374,10 +379,15 @@ export const reportPortalPayment = async (req, res, next) => {
       return next(new AppError('El contrato no pertenece al cliente autenticado', 403));
     }
 
-    // Find the target quota
-    const quota = await Quota.findOne({ contract: contractId, number: parseInt(cuotaNumber), tenantId });
+    // The quota the payment starts from: the one the buyer chose, if it is of this contract and still owes,
+    // or else the oldest unpaid one (initial quotas first, then by number, as the cascade applies it).
+    // Numbers repeat between initial and ordinary quotas, so they are never used to find it.
+    const unpaid = (await Quota.find({ contract: contractId, tenantId }).lean())
+      .filter((q) => quotaPendingAmount(q) > 0)
+      .sort((a, b) => (a.type === b.type ? (a.number || 0) - (b.number || 0) : (a.type === 'inicial' ? -1 : 1)));
+    const quota = (quotaId && unpaid.find((q) => String(q._id) === String(quotaId))) || unpaid[0];
     if (!quota) {
-      return next(new AppError('Cuota no encontrada', 404));
+      return next(new AppError('Este contrato no tiene cuotas pendientes', 400));
     }
 
     let captureUrl = null;

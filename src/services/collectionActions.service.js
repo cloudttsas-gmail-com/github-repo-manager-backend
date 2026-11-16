@@ -28,14 +28,16 @@ export const sellerClientIds = async ({ tenantId, companyId, userId }) => {
 };
 
 /**
- * Adds `promiseState` and `promisePaid` to each action. For each client, promises are taken oldest
- * first and use up the approved payments reported after the action and paid by the promised date, so
- * one payment never keeps two promises. States:
+ * Adds `promiseState` and `promisePaid` to each action. For each client, promises are taken by their
+ * promised date (the nearest first, then the oldest) and use up the approved payments reported after the
+ * action and paid by that date, so one payment never keeps two promises and a renegotiated, nearer one
+ * is kept first. States:
  * - cumplida: those payments reach the amount;
  * - en_revision: not reached yet, but a payment reported in the window waits for approval;
  * - vigente: not reached and the date hasn't passed;
  * - incumplida: the date passed without it;
- * - reemplazada: broken, but the client agreed a newer promise afterwards.
+ * - reemplazada: broken, but afterwards the client agreed a newer promise on the same contract (or one of
+ *   the two names no contract).
  * `allActions` (optional) are every promise of those clients, so allocation and replacement look at
  * the whole history even when `actions` is one page.
  */
@@ -62,8 +64,9 @@ export const withPromiseStates = async (actions, { tenantId, companyId }, now = 
   const byClient = new Map();
   promised.forEach((action) => byClient.set(clientOf(action), [...(byClient.get(clientOf(action)) || []), action]));
   for (const [client, list] of byClient) {
-    list.sort((a, b) => a.createdAt - b.createdAt);
-    list.forEach((action, index) => {
+    list.sort((a, b) => new Date(a.promise.dueDate) - new Date(b.promise.dueDate) || a.createdAt - b.createdAt);
+    const sameContract = (a, b) => !a.contractId || !b.contractId || String(a.contractId) === String(b.contractId);
+    list.forEach((action) => {
       const amount = action.promise.amount || 0;
       const due = endOfBogotaDay(action.promise.dueDate);
       const fits = (payment) => String(payment.clientId) === client
@@ -85,7 +88,7 @@ export const withPromiseStates = async (actions, { tenantId, companyId }, now = 
       let state;
       if (paid >= amount) state = 'cumplida';
       else if (inReview) state = 'en_revision';
-      else if (today > due) state = list.slice(index + 1).length ? 'reemplazada' : 'incumplida';
+      else if (today > due) state = list.some((other) => other !== action && other.createdAt > action.createdAt && sameContract(other, action)) ? 'reemplazada' : 'incumplida';
       else state = 'vigente';
       states.set(String(action._id), { promiseState: state, promisePaid: paid });
     });

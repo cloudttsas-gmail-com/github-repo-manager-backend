@@ -131,7 +131,8 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP
       if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: 'Escribe cuánto prometió pagar' });
       if (!dueDate || Number.isNaN(dueDate.getTime())) return res.status(400).json({ success: false, message: 'Escribe la fecha del compromiso' });
       if (dueDate < startOfBogotaDay()) return res.status(400).json({ success: false, message: 'La fecha del compromiso no puede ser anterior a hoy' });
-      if (dueDate > new Date(startOfBogotaDay().getTime() + MAX_PROMISE_DAYS * DAY_MS)) return res.status(400).json({ success: false, message: `El compromiso puede ser hasta ${MAX_PROMISE_DAYS} días desde hoy` });
+      // The last allowed day counts whole (dates are kept at noon)
+      if (dueDate > endOfBogotaDay(new Date(startOfBogotaDay().getTime() + MAX_PROMISE_DAYS * DAY_MS))) return res.status(400).json({ success: false, message: `El compromiso puede ser hasta ${MAX_PROMISE_DAYS} días desde hoy` });
       promiseData = { amount, dueDate };
     }
 

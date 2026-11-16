@@ -116,6 +116,7 @@ export const getLots = async (req, res, next) => {
       minArea,
       maxArea,
       showDeleted,
+      expiresWithinDays,
     } = req.query;
     const skip = (page - 1) * limit;
 
@@ -137,10 +138,16 @@ export const getLots = async (req, res, next) => {
       query.status = status;
     }
     if (manzana) {
-      query.manzana = { $regex: manzana.trim(), $options: 'i' };
+      query.manzana = { $regex: escapeRegex(String(manzana).trim()), $options: 'i' };
     }
     if (stage) {
-      query.stage = { $regex: stage.trim(), $options: 'i' };
+      query.stage = { $regex: escapeRegex(String(stage).trim()), $options: 'i' };
+    }
+    // Apartados and separados about to be released (the Pendientes row links here with 3 days)
+    const expiring = parseInt(expiresWithinDays, 10);
+    if (Number.isInteger(expiring) && expiring >= 1 && expiring <= 60) {
+      const now = new Date();
+      query.expiresAt = { $gte: now, $lte: new Date(now.getTime() + expiring * 24 * 60 * 60 * 1000) };
     }
     if (sellerId) {
       query.sellerId = sellerId;

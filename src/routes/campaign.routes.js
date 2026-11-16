@@ -10,11 +10,13 @@ import { companyMiddleware } from '../middleware/company.js';
 import { PERMISSIONS } from '../config/permissions.js';
 import { estimateCostUsd, WHATSAPP_RATES_CHECKED_AT, WHATSAPP_RATES_USD } from '../config/whatsappRates.js';
 import { logAudit } from '../utils/auditLogger.js';
-import { buildAudience, EXCLUSION_REASONS, normalizeFilters } from '../services/campaignAudience.service.js';
+import { buildAudience, EXCLUSION_REASONS, mobilePhone, normalizeFilters } from '../services/campaignAudience.service.js';
+import AuditLog from '../models/AuditLog.js';
+import { claimPaymentRequest } from '../utils/idempotency.js';
 import { campaignTemplates, lastPayments, recipientValues, renderBody, sendComponents } from '../services/campaignTemplates.service.js';
 import { kickCampaigns } from '../services/campaignSender.service.js';
 import { DEFAULT_CONTACT_POLICY, nextContactWindow, resolveContactPolicy, validateContactPolicy } from '../services/contactPolicy.service.js';
-import { companyWhatsAppAccount, internationalPhone } from '../services/whatsappTemplates.service.js';
+import { companyWhatsAppAccount } from '../services/whatsappTemplates.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
 
 const router = express.Router();
@@ -27,7 +29,14 @@ const canSend = checkPermission(PERMISSIONS.COBRANZA_CAMPAIGNS);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RESULT_DAYS = 7;
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
-const SKIP_LABELS = { ...EXCLUSION_REASONS, no_contract: 'Ya no tiene un contrato abierto' };
+const SKIP_LABELS = {
+  ...EXCLUSION_REASONS,
+  no_contract: 'Ya no tiene un contrato abierto',
+  no_longer_matches: 'Ya no cumple los filtros (pagó o cambió su estado)',
+  excluded: 'Quedó por fuera al enviar',
+};
+const TEST_LIMIT = 10;
+const TEST_WINDOW_MS = 60 * 60 * 1000;
 
 const loadCompany = (req) => Company.findOne({ _id: req.user.companyId, tenantId: req.user.tenantId });
 const maskPhone = (phone) => (phone ? `${String(phone).slice(0, 3)} ••• ${String(phone).slice(-4)}` : null);
@@ -60,9 +69,9 @@ router.get('/policy', canSend, async (req, res, next) => {
 router.put('/policy', checkPermission(PERMISSIONS.CONFIG_TENANT), async (req, res, next) => {
   try {
     let changes;
-    try { changes = validateContactPolicy(req.body || {}); } catch (error) { return badRequest(res, error.message); }
     const company = await loadCompany(req);
     if (!company) return notFound(res, 'Proyecto no encontrado');
+    try { changes = validateContactPolicy(req.body || {}, company.contactPolicy); } catch (error) { return badRequest(res, error.message); }
     const before = resolveContactPolicy(company.contactPolicy);
     company.contactPolicy = { ...(company.contactPolicy?.toObject?.() || company.contactPolicy || {}), ...changes };
     await company.save();
@@ -79,7 +88,10 @@ router.get('/templates', canSend, async (req, res, next) => {
     if (!company) return notFound(res, 'Proyecto no encontrado');
     if (!companyWhatsAppAccount(company)) return badRequest(res, 'El proyecto no tiene un número de WhatsApp conectado.');
     const templates = await campaignTemplates(company);
-    res.json({ success: true, data: { templates, rates: WHATSAPP_RATES_USD, ratesCheckedAt: WHATSAPP_RATES_CHECKED_AT } });
+    res.json({
+      success: true,
+      data: { templates, rates: WHATSAPP_RATES_USD, ratesCheckedAt: WHATSAPP_RATES_CHECKED_AT, sendingEnabled: process.env.ENABLE_NOTIFICATIONS === 'true' },
+    });
   } catch (error) { next(error); }
 });
 
@@ -102,7 +114,7 @@ router.post('/preview', canSend, async (req, res, next) => {
     const exclusions = { pendingPayment: req.body?.exclusions?.pendingPayment !== false, openPromise: req.body?.exclusions?.openPromise !== false };
     const policy = resolveContactPolicy(company.contactPolicy);
     const { tenantId, companyId } = req.user;
-    const audience = await buildAudience({ tenantId, companyId, filters, exclusions, category: template?.category || 'UTILITY', policy });
+    const audience = await buildAudience({ tenantId, companyId, filters, exclusions, category: template?.category || 'UTILITY', policy, document: template?.media?.source });
 
     const sample = audience.recipients.find((r) => String(r.client._id) === String(req.body?.sampleClientId)) || audience.recipients[0];
     let preview = null;
@@ -164,8 +176,15 @@ router.post('/', canSend, async (req, res, next) => {
     const filters = normalizeFilters(req.body?.filters);
     const exclusions = { pendingPayment: req.body?.exclusions?.pendingPayment !== false, openPromise: req.body?.exclusions?.openPromise !== false };
     const { tenantId, companyId, userId, fullName: userName } = req.user;
-    const audience = await buildAudience({ tenantId, companyId, filters, exclusions, category: template.category, policy }, now);
+    const audience = await buildAudience({ tenantId, companyId, filters, exclusions, category: template.category, policy, document: template.media?.source }, now);
     if (!audience.recipients.length) return badRequest(res, 'Con estos filtros no queda ningún comprador para enviar.');
+    // The wizard sends one id per send: a second click, tab or retry never creates it twice
+    try {
+      await claimPaymentRequest(`campaign:${companyId}`, req.body?.requestId);
+    } catch (error) {
+      if (error.statusCode === 409) return res.status(409).json({ success: false, message: 'Este envío ya fue creado. Revisa la lista de envíos.' });
+      throw error;
+    }
 
     const campaign = await Campaign.create({
       tenantId, companyId, name,
@@ -326,8 +345,11 @@ router.post('/:id/cancel', canSend, async (req, res, next) => {
 router.post('/test', canSend, async (req, res, next) => {
   try {
     if (process.env.ENABLE_NOTIFICATIONS !== 'true') return notificationsOff(res);
-    const phone = internationalPhone(req.body?.phone);
+    const phone = mobilePhone(req.body?.phone);
     if (!phone) return badRequest(res, 'Escribe un celular colombiano de 10 dígitos.');
+    // The test carries a real buyer's data: limited and recorded in the audit
+    const recent = await AuditLog.countDocuments({ userId: req.user.userId, action: 'TEST_CAMPAIGN', createdAt: { $gte: new Date(Date.now() - TEST_WINDOW_MS) } });
+    if (recent >= TEST_LIMIT) return res.status(429).json({ success: false, message: 'Ya enviaste muchas pruebas en la última hora. Intenta más tarde.' });
     const company = await loadCompany(req);
     if (!company) return notFound(res, 'Proyecto no encontrado');
     const picked = await pickTemplate(company, req.body?.template);
@@ -336,7 +358,7 @@ router.post('/test', canSend, async (req, res, next) => {
     const { tenantId, companyId } = req.user;
     const audience = await buildAudience({
       tenantId, companyId, filters: normalizeFilters(req.body?.filters), exclusions: { pendingPayment: false, openPromise: false },
-      category: 'UTILITY', policy: { weeklyLimit: Infinity },
+      category: 'UTILITY', policy: { weeklyLimit: Infinity }, document: template.media?.source,
     });
     const sample = audience.recipients.find((r) => String(r.client._id) === String(req.body?.sampleClientId)) || audience.recipients[0];
     if (!sample) return badRequest(res, 'Con estos filtros no hay un comprador para tomar los datos de la prueba.');
@@ -350,6 +372,10 @@ router.post('/test', canSend, async (req, res, next) => {
     } catch (error) {
       return res.status(502).json({ success: false, message: `Meta no envió la prueba: ${error.message}` });
     }
+    await logAudit(req, {
+      action: 'TEST_CAMPAIGN', module: 'WHATSAPP', targetId: sample.client._id,
+      details: { template: template.name, sentTo: maskPhone(phone), sampleClient: sample.client.name },
+    });
     res.json({ success: true, data: { sentTo: maskPhone(phone), sampleClient: sample.client.name } });
   } catch (error) { next(error); }
 });

@@ -19,19 +19,25 @@ class WhatsAppService {
     try {
       const { wabaUrl, accessToken } = this.getGraphUrl(config);
       const fields = 'id,name,language,status,category,rejected_reason,quality_score,components';
-      const response = await fetch(`${wabaUrl}/message_templates?fields=${fields}&limit=200`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-        },
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error?.message || 'Error fetching WhatsApp templates');
+      // Meta pages the list: follow it (a few pages at most) so no template goes missing
+      const templates = [];
+      let url = `${wabaUrl}/message_templates?fields=${fields}&limit=200`;
+      for (let page = 0; url && page < 10; page += 1) {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+          },
+          signal: AbortSignal.timeout(30000),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error?.message || 'Error fetching WhatsApp templates');
+        }
+        templates.push(...(data.data || []));
+        url = data.paging?.next || null;
       }
-
-      return data.data || [];
+      return templates;
     } catch (error) {
       console.error('WhatsApp Service Error (getTemplates):', error);
       throw error;
@@ -145,6 +151,7 @@ class WhatsAppService {
       const { baseUrl, accessToken } = this.getGraphUrl(config);
       const response = await fetch(`${baseUrl}/messages`, {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',

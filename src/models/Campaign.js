@@ -30,6 +30,8 @@ const campaignSchema = new mongoose.Schema({
   finishedAt: Date,
   cancelledAt: Date,
   estimatedCostUsd: Number,
+  // Why it is waiting, when something outside Operix holds it (Meta paused the template)
+  notice: String,
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   createdByName: String,
 }, { timestamps: true });

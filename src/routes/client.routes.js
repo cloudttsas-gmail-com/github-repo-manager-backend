@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import Client from '../models/Client.js';
 import Contract from '../models/Contract.js';
 import { protect, checkPermission } from '../middleware/auth.js';
-import { PERMISSIONS } from '../config/permissions.js';
+import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
 import { companyMiddleware } from '../middleware/company.js';
 import { logAudit } from '../utils/auditLogger.js';
@@ -511,9 +511,17 @@ router.put('/:id/contact-consent', companyMiddleware, checkPermission(PERMISSION
     const client = await Client.findOne({ _id: req.params.id, tenantId, companyId });
     if (!client) return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
     const before = client.contactConsent?.status || 'sin_registro';
+    // Undoing an opt-out (Ley 2300) is for whoever configures the project, with the buyer's request as reason
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (before === 'baja' && status !== 'baja') {
+      if (!hasPermission(req.user.role, PERMISSIONS.CONFIG_TENANT)) {
+        return res.status(403).json({ success: false, message: 'Solo quien administra la configuración puede quitar una baja.' });
+      }
+      if (reason.length < 5) return res.status(400).json({ success: false, message: 'Escribe por qué se quita la baja (por ejemplo, el comprador lo pidió por escrito).' });
+    }
     client.contactConsent = { status, updatedAt: new Date(), source: 'panel', updatedBy: userId };
     await client.save();
-    await logAudit(req, { action: 'UPDATE_CONTACT_CONSENT', module: 'CLIENTS', targetId: client._id, details: { before, after: status } });
+    await logAudit(req, { action: 'UPDATE_CONTACT_CONSENT', module: 'CLIENTS', targetId: client._id, details: { before, after: status, ...(reason ? { reason } : {}) } });
     res.json({ success: true, data: { contactConsent: client.contactConsent } });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

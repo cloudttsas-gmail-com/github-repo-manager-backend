@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import Client from '../models/Client.js';
 import Commission from '../models/Commission.js';
 import Contract from '../models/Contract.js';
 import Conversation from '../models/Conversation.js';
@@ -14,14 +15,15 @@ const RESERVATION_WARNING_DAYS = 3;
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 
 /** Contracts with at least one quota past due and unpaid (same rule as the statement) */
-const overdueContracts = async ({ tenantId, companyId, contractIds }, now) => {
+const overdueContracts = async ({ tenantId, companyId, clientIds }, now) => {
   const match = {
     tenantId: toId(tenantId),
     companyId: toId(companyId),
     status: { $ne: 'pagado' },
     dueDate: { $lt: startOfBogotaDay(now) },
   };
-  if (contractIds) match.contract = { $in: contractIds.map(toId) };
+  // A seller's clients count with all their contracts, as the clients list shows them
+  if (clientIds) match.contract = { $in: (await Contract.find({ tenantId, companyId, client: { $in: clientIds } }).distinct('_id')).map(toId) };
   const [row] = await Quota.aggregate([
     { $match: match },
     { $addFields: { pending: { $subtract: [{ $ifNull: ['$value', 0] }, { $ifNull: ['$amountPaid', 0] }] } } },
@@ -64,7 +66,6 @@ export const buildPendingItems = async ({ tenantId, companyId, role, userId }, n
   const items = [];
   const tasks = [];
 
-  const sellerContracts = isSeller ? await Contract.find({ tenantId, companyId, sellerId: userId }).distinct('_id') : null;
   const sellerClients = isSeller ? await sellerClientIds({ tenantId, companyId, userId }) : null;
 
   if (can(PERMISSIONS.PAGOS_APPROVE) && !isSeller) {
@@ -106,7 +107,7 @@ export const buildPendingItems = async ({ tenantId, companyId, role, userId }, n
 
   if (can(PERMISSIONS.CARTERA_DASHBOARD) || isSeller) {
     tasks.push((async () => {
-      const result = await overdueContracts({ tenantId, companyId, contractIds: sellerContracts }, now);
+      const result = await overdueContracts({ tenantId, companyId, clientIds: sellerClients }, now);
       items.push({ key: isSeller ? 'my_clients_in_arrears' : 'clients_in_arrears', ...result });
     })());
   }
@@ -114,7 +115,10 @@ export const buildPendingItems = async ({ tenantId, companyId, role, userId }, n
   if (can(PERMISSIONS.CLIENTES_EDIT) && !isSeller) {
     tasks.push((async () => {
       const rows = await contractsWithoutPlan({ tenantId, companyId });
-      items.push({ key: 'contracts_without_plan', count: rows.length, oldest: rows.reduce((min, row) => (!min || row.createdAt < min ? row.createdAt : min), null) });
+      // Counted by client, as the clients list filtered «sin plan» shows them (clients still in the project)
+      const clientIds = [...new Set(rows.map((row) => String(row.client)))];
+      const existing = await Client.countDocuments({ _id: { $in: clientIds.map(toId) }, tenantId, companyId });
+      items.push({ key: 'contracts_without_plan', count: existing, oldest: rows.reduce((min, row) => (!min || row.createdAt < min ? row.createdAt : min), null) });
     })());
   }
 

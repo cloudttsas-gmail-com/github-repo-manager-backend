@@ -87,10 +87,16 @@ export const handleWebhook = async (req, res) => {
   });
 };
 
+// Meta may group several events in one call: every entry and change is processed
 const processWebhookEvent = async (body) => {
-  const value = body.entry?.[0]?.changes?.[0]?.value;
-  if (!value) return;
+  for (const entry of body.entry || []) {
+    for (const change of entry.changes || []) {
+      if (change?.value) await processWebhookChange(change.value);
+    }
+  }
+};
 
+const processWebhookChange = async (value) => {
   const messageData = value.messages?.[0];
   if (messageData) {
     const waId = messageData.from; // Phone number with country code, e.g. "573001234567"
@@ -119,12 +125,12 @@ const processWebhookEvent = async (body) => {
       text = `[Mensaje tipo ${messageData.type}]`;
     }
 
-    // Match the client by the last 10 digits of the phone number
-    const last10Digits = waId.slice(-10);
+    // Match the client by the last 10 digits, whatever separators the stored number has
+    const phonePattern = phoneDigitsPattern(waId);
     const client = await Client.findOne({
       tenantId,
       companyId: company._id,
-      phone: { $regex: last10Digits },
+      phone: { $regex: phonePattern },
     });
     if (!client) {
       console.warn('[WHATSAPP WEBHOOK] message from a number with no client');
@@ -157,7 +163,7 @@ const processWebhookEvent = async (body) => {
       status: 'received',
     });
     console.log(`[WHATSAPP WEBHOOK] inbound ${messageData.type} message stored`);
-    await recordCampaignReply(client, text);
+    await recordCampaignReply({ tenantId, companyId: company._id, phonePattern }, text);
     return;
   }
 
@@ -169,23 +175,45 @@ const processWebhookEvent = async (body) => {
   }
 };
 
-const REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-// A reply that is only one of these words opts the buyer out of messages
-const OPT_OUT = /^(baja|stop|parar|no m[aá]s|cancelar|no quiero (recibir )?(m[aá]s )?mensajes)$/i;
+/** Regex for the last 10 digits of a number, allowing spaces, dashes or dots between them as stored. */
+export const phoneDigitsPattern = (number) => String(number || '').replace(/\D/g, '').slice(-10).split('').join('\\D*');
 
-/** A buyer answered: the send that reached them in the last week gets the reply, and BAJA opts them out. */
-const recordCampaignReply = async (client, text) => {
-  const optOut = OPT_OUT.test(String(text || '').trim().replace(/[.!¡]+/g, ''));
+const REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// A short reply asking to stop opts the buyer out: «BAJA», «Baja por favor», «darme de baja», «STOP»…
+const OPT_OUT_KEYWORDS = new Set(['baja', 'stop', 'parar']);
+// Words that may come with the keyword: «Baja por favor», «quiero la baja», «darme de baja ya»
+const OPT_OUT_COURTESY = new Set(['por', 'favor', 'porfa', 'porfavor', 'gracias', 'quiero', 'solicito', 'pido', 'la', 'de', 'me', 'dar', 'darme', 'ya', 'una', 'el', 'a', 'y', 'ok']);
+const OPT_OUT_PHRASE = /(darme de baja|cancelar suscripci[oó]n|no (quiero|deseo) (recibir )?(m[aá]s )?mensajes|no me escriban|no m[aá]s mensajes)/i;
+export const isOptOut = (text) => {
+  const clean = String(text || '').normalize('NFC').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean || clean.length > 40) return false;
+  if (OPT_OUT_PHRASE.test(clean)) return true;
+  const words = clean.toLowerCase().split(' ');
+  return words.some((w) => OPT_OUT_KEYWORDS.has(w)) && words.every((w) => OPT_OUT_KEYWORDS.has(w) || OPT_OUT_COURTESY.has(w));
+};
+
+/**
+ * A buyer answered: the send that reached them in the last week gets the reply, and an opt-out
+ * applies to every buyer of the project with that number (a couple may share one).
+ */
+const recordCampaignReply = async ({ tenantId, companyId, phonePattern }, text) => {
+  const optOut = isOptOut(text);
   const now = new Date();
-  const latest = await CampaignRecipient.findOne({ clientId: client._id, sentAt: { $gte: new Date(now.getTime() - REPLY_WINDOW_MS) } }).sort({ sentAt: -1 });
+  const clients = await Client.find({ tenantId, companyId, phone: { $regex: phonePattern } }).select('_id contactConsent').lean();
+  if (!clients.length) return;
+  const ids = clients.map((c) => c._id);
+  const latest = await CampaignRecipient.findOne({ clientId: { $in: ids }, sentAt: { $gte: new Date(now.getTime() - REPLY_WINDOW_MS) } }).sort({ sentAt: -1 });
   if (latest) {
     if (!latest.repliedAt) latest.repliedAt = now;
     if (optOut && !latest.optedOutAt) latest.optedOutAt = now;
     await latest.save();
   }
-  if (optOut && client.contactConsent?.status !== 'baja') {
-    await Client.updateOne({ _id: client._id }, { contactConsent: { status: 'baja', updatedAt: now, source: 'whatsapp' } });
-    console.log('[WHATSAPP WEBHOOK] a buyer opted out of messages');
+  if (optOut) {
+    const { modifiedCount } = await Client.updateMany(
+      { _id: { $in: ids }, 'contactConsent.status': { $ne: 'baja' } },
+      { contactConsent: { status: 'baja', updatedAt: now, source: 'whatsapp' } },
+    );
+    if (modifiedCount) console.log('[WHATSAPP WEBHOOK] buyers opted out of messages:', modifiedCount);
   }
 };
 
@@ -197,7 +225,8 @@ const recordCampaignStatus = async (status) => {
   const at = status.timestamp ? new Date(Number(status.timestamp) * 1000) : new Date();
   if (status.status === 'failed') {
     const error = status.errors?.[0];
-    await CampaignRecipient.updateOne({ waMessageId: status.id }, {
+    // A failure report never undoes a read one (they can arrive out of order)
+    await CampaignRecipient.updateOne({ waMessageId: status.id, status: { $ne: 'read' } }, {
       status: 'failed',
       error: error ? `${error.title || error.message || 'Error'}${error.code ? ` (${error.code})` : ''}` : 'Meta no entregó el mensaje',
     });
