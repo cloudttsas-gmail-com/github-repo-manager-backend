@@ -81,6 +81,8 @@ const buildClientRowsPipeline = async (req, { search = '', behaviorFilter } = {}
 
   const aggregatePipeline = [
     { $match: matchQuery },
+    // The data-validation token is a secret link of the buyer: never in list responses
+    { $unset: 'validationToken' },
     // Join with Contracts
     {
       $lookup: {
@@ -347,7 +349,8 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
       }
     }
 
-    const client = await Client.findOne(query);
+    // The data-validation token is a secret link of the buyer: never in the panel's responses
+    const client = await Client.findOne(query).select('-validationToken');
     if (!client) {
       return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
     }
