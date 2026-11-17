@@ -714,7 +714,18 @@ export const sellLot = async (req, res, next) => {
     } = req.body;
 
     const isSellerRole = ['vendedor', 'ejecutivo_comercial', 'agent'].includes(role);
-    const effectiveSellerId = sellerId || (isSellerRole ? userId : null);
+    // A seller sells for themselves; anyone else may name an active member of this team
+    if (isSellerRole && sellerId && String(sellerId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Solo puedes registrar ventas a tu nombre' });
+    }
+    const effectiveSellerId = isSellerRole ? userId : (sellerId || null);
+    if (effectiveSellerId && !isSellerRole) {
+      const User = (await import('../models/User.js')).default;
+      const seller = mongoose.isValidObjectId(effectiveSellerId)
+        ? await User.exists({ _id: effectiveSellerId, tenantId, status: 'active', role: { $ne: 'cliente' } })
+        : null;
+      if (!seller) return res.status(400).json({ success: false, message: 'El asesor seleccionado no es del equipo' });
+    }
 
     const lot = await Lot.findOne({ _id: id, tenantId, companyId });
     if (!lot) return res.status(404).json({ success: false, message: 'Lote no encontrado' });
@@ -1125,6 +1136,11 @@ export const assignLotSeller = async (req, res, next) => {
       const existing = await Commission.findOne({ contractId: contract._id, tenantId, companyId });
       if (!existing) {
         await buildCommissionForContract({ contract, tenantId, companyId });
+      } else if (String(existing.sellerId) !== String(seller._id)
+        && existing.installments.every((i) => ['PENDING', 'AVAILABLE'].includes(i.status))) {
+        // Nothing filed yet: the commission follows the contract's new seller
+        existing.sellerId = seller._id;
+        await existing.save();
       }
       await evaluateCommissionMilestones({ contractId: contract._id, tenantId, companyId });
     } catch (commissionError) {
