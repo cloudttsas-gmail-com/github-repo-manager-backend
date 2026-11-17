@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { whatsappService } from '../services/whatsapp.service.js';
 import CampaignRecipient from '../models/CampaignRecipient.js';
 import {
@@ -323,25 +324,40 @@ export const sendMessage = async (req, res, next) => {
 /**
  * Get chat history
  */
+// Conversations saved before they carried a project belong to every project, as in the list
+const projectScope = (companyId) => ({ $or: [{ companyId }, { companyId: { $exists: false } }, { companyId: null }] });
+
+/**
+ * Messages of a chat, by buyer (`/history/:clientId`) or by conversation
+ * (`/history/conversation/:conversationId`, for numbers that are not a buyer). Opening it marks it read.
+ */
 export const getChatHistory = async (req, res, next) => {
   try {
-    const { clientId } = req.params;
-    const { tenantId } = req.user;
+    const { clientId, conversationId } = req.params;
+    const { tenantId, companyId } = req.user;
+    const byId = conversationId || clientId;
+    if (!mongoose.isValidObjectId(byId)) return res.status(200).json({ success: true, data: [] });
 
-    const conv = await Conversation.findOne({ clientId, tenantId });
+    const conv = await Conversation.findOne({
+      tenantId,
+      ...(conversationId ? { _id: conversationId } : { clientId }),
+      ...projectScope(companyId),
+    }).sort({ updatedAt: -1 });
     if (!conv) {
       return res.status(200).json({ success: true, data: [] });
     }
 
-    // Reset unread count when opening chat
-    conv.unreadCount = 0;
-    await conv.save();
+    if (conv.unreadCount) {
+      conv.unreadCount = 0;
+      await conv.save();
+    }
 
+    // The latest 100, oldest first
     const messages = await Message.find({ conversationId: conv._id, tenantId })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: -1 })
       .limit(100);
 
-    res.status(200).json({ success: true, data: messages });
+    res.status(200).json({ success: true, data: messages.reverse() });
   } catch (error) {
     next(error);
   }
@@ -355,10 +371,7 @@ export const getConversations = async (req, res, next) => {
     const { tenantId, companyId } = req.user;
 
     // Conversations saved before they carried a project show in every project, as before
-    const conversations = await Conversation.find({
-      tenantId,
-      $or: [{ companyId }, { companyId: { $exists: false } }, { companyId: null }],
-    })
+    const conversations = await Conversation.find({ tenantId, ...projectScope(companyId) })
       .populate('clientId', 'name fullName email phone whatsapp')
       .sort({ updatedAt: -1 });
 

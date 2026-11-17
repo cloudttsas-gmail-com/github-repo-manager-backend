@@ -54,6 +54,7 @@ router.get('/template-fields', canFollowUp, companyMiddleware, getTemplateFields
 router.post('/templates/header-sample', canFollowUp, companyMiddleware, uploadTemplateMedia.single('file'), prepareTemplateHeader);
 router.post('/templates', canFollowUp, companyMiddleware, createTemplate);
 router.delete('/templates/:name', canFollowUp, companyMiddleware, deleteTemplate);
+router.get('/history/conversation/:conversationId', canFollowUp, companyMiddleware, getChatHistory);
 router.get('/history/:clientId', canFollowUp, companyMiddleware, getChatHistory);
 router.post('/send', canFollowUp, companyMiddleware, sendMessage);
 

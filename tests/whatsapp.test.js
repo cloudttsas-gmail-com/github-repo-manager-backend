@@ -234,6 +234,16 @@ describe('WhatsApp uses the active project, never another one or another tenant'
     expect(res.body.data.some((c) => c.waId.endsWith('3001112233'))).toBe(false);
   });
 
+  it('opens the history of a number that is not a buyer, only inside its project', async () => {
+    const own = await Conversation.findOne({ tenantId: String(tenantId), waId: { $regex: '3009998877$' } });
+    const res = await as(request(app).get(`/api/whatsapp/history/conversation/${own._id}?companyId=${first._id}`));
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    const otherProject = await Conversation.findOne({ tenantId: String(tenantId), waId: { $regex: '3001112233$' } });
+    const leak = await as(request(app).get(`/api/whatsapp/history/conversation/${otherProject._id}?companyId=${first._id}`));
+    expect(leak.body.data).toEqual([]);
+  });
+
   it('disconnecting only touches the active project', async () => {
     const res = await as(request(app).post(`/api/whatsapp/disconnect?companyId=${second._id}`)).send({});
     expect(res.statusCode).toBe(200);
