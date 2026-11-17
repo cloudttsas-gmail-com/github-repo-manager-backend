@@ -258,7 +258,9 @@ export const getMyLots = async (req, res, next) => {
         { reservationBy: clientId }
       ],
       tenantId
-    }).populate('companyId', 'name slug logo phone email').lean();
+    // The buyer never sees the team's notes, the seller or the import and archive fields
+    }).select('-reservationDetails -sellerId -deletedReason -deletedBy -excelRowId')
+      .populate('companyId', 'name slug logo phone email').lean();
 
     const lots = directLots.map(lot => {
       const associatedContract = contracts.find(c => c.lot && c.lot.toString() === lot._id.toString());

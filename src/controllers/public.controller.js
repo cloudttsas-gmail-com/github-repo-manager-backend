@@ -618,6 +618,8 @@ export const verifyOTPCodePublic = async (req, res, next) => {
           number: q.number,
           type: q.type,
           value: q.value,
+          // What is still owed: a quota with a partial payment owes less than its value
+          pending: Math.max(0, (q.value || 0) - (q.amountPaid || 0)),
           dueDate: q.dueDate,
           status: q.status,
         })),

@@ -32,8 +32,9 @@ export const getPayments = async (req, res, next) => {
 
     const { page = 1, limit = 12, search, status, sortBy, order, clientId } = req.query;
 
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    // Bounded: one request never returns the whole collection
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(Math.max(1, parseInt(limit) || 12), 500);
     const skip = (pageNum - 1) * limitNum;
 
     // Build dynamic sort
@@ -45,7 +46,8 @@ export const getPayments = async (req, res, next) => {
         'fechaPago': 'fechaPago',
         'status': 'status',
         'createdAt': 'createdAt',
-      }[sortBy] || sortBy;
+        'banco': 'banco',
+      }[sortBy] || 'createdAt'; // only the known columns, never an arbitrary field name
 
       sortObj = { [sortField]: order === 'asc' ? 1 : -1 };
     }

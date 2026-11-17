@@ -84,6 +84,20 @@ describe('Selling a lot with a seller', () => {
     expect(String((await Commission.findOne({ contractId: contract._id })).sellerId)).toBe(seller.userId);
     const moved = await request(app).post(`/api/lots/${lot._id}/assign-seller?${q()}`).set('Authorization', `Bearer ${org.token}`).send({ sellerId: otherSeller.userId });
     expect(moved.statusCode).toBe(200);
+    expect(moved.body.data.commissionWarning).toBeNull();
+    expect(String((await Commission.findOne({ contractId: contract._id })).sellerId)).toBe(otherSeller.userId);
+
+    // Reassigning follows the sale's rule: a random id or an account id is not a team member
+    const random = await request(app).post(`/api/lots/${lot._id}/assign-seller?${q()}`).set('Authorization', `Bearer ${org.token}`).send({ sellerId: new mongoose.Types.ObjectId().toString() });
+    expect(random.statusCode).toBe(400);
+    const notAnId = await request(app).post(`/api/lots/${lot._id}/assign-seller?${q()}`).set('Authorization', `Bearer ${org.token}`).send({ sellerId: 'abc' });
+    expect(notAnId.statusCode).toBe(400);
+
+    // Once an installment is filed the commission stays with its seller, and the answer says so
+    await Commission.updateOne({ contractId: contract._id }, { $set: { 'installments.0.status': 'FILED' } });
+    const kept = await request(app).post(`/api/lots/${lot._id}/assign-seller?${q()}`).set('Authorization', `Bearer ${org.token}`).send({ sellerId: seller.userId });
+    expect(kept.statusCode).toBe(200);
+    expect(kept.body.data.commissionWarning).toMatch(/asesor anterior/);
     expect(String((await Commission.findOne({ contractId: contract._id })).sellerId)).toBe(otherSeller.userId);
   });
 });

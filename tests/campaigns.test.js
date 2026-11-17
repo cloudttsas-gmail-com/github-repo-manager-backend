@@ -112,6 +112,17 @@ describe('Templates a send can use', () => {
   });
 });
 
+describe('Opt-out replies', () => {
+  it('recognises the ways buyers ask to stop, and not a message that only mentions «baja»', async () => {
+    const { isOptOut } = await import('../src/controllers/whatsapp.controller.js');
+    ['BAJA', 'Baja por favor', 'darme de baja', 'Deme de baja', 'Dame de baja', 'Me dan de baja por favor',
+      'Por favor no me envíen más mensajes', 'No quiero que me escriban', 'no enviar más mensajes', 'STOP']
+      .forEach((text) => expect([text, isOptOut(text)]).toEqual([text, true]));
+    ['la cuota baja el otro mes', 'Hola, ya pagué', 'no me llegó el recibo', '']
+      .forEach((text) => expect([text, isOptOut(text)]).toEqual([text, false]));
+  });
+});
+
 describe('Sends (/api/campaigns)', () => {
   let a;
   let seller;
@@ -340,6 +351,13 @@ describe('Sends (/api/campaigns)', () => {
       .send({ filters: { mora: 'al_dia' } });
     expect(shared.body.data.recipients).toBe(1);
     expect(shared.body.data.excluded.find((e) => e.reason === 'duplicate_phone').count).toBe(1);
+
+    // The opt-out belongs to the number: with one of them opted out, nobody on that mobile gets the send
+    await Client.updateOne({ _id: twin.client._id }, { contactConsent: { status: 'baja', updatedAt: new Date(), source: 'panel' } });
+    const optedOut = await request(app).post(`/api/campaigns/preview?${q()}`).set('Authorization', `Bearer ${a.token}`)
+      .send({ filters: { mora: 'al_dia' } });
+    expect(optedOut.body.data.recipients).toBe(0);
+    expect(optedOut.body.data.excluded.find((e) => e.reason === 'opted_out').count).toBe(2);
     await Quota.deleteMany({ contract: twin.contract._id });
     await Contract.deleteOne({ _id: twin.contract._id });
     await Client.deleteOne({ _id: twin.client._id });

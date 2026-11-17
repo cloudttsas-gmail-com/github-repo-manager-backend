@@ -98,10 +98,28 @@ const processWebhookEvent = async (body) => {
 };
 
 const processWebhookChange = async (value) => {
-  const messageData = value.messages?.[0];
-  if (messageData) {
+  // Meta may group several messages of one buyer in a change («hola» and then «BAJA»): each one counts
+  for (const messageData of value.messages || []) {
+    await processInboundMessage(value, messageData);
+  }
+
+  // Status updates (sent, delivered, read, failed)
+  for (const status of value.statuses || []) {
+    await Message.findOneAndUpdate({ waId: status.id }, { status: status.status });
+    await recordCampaignStatus(status);
+    console.log(`[WHATSAPP WEBHOOK] status ${status.status}`);
+  }
+};
+
+const processInboundMessage = async (value, messageData) => {
+  {
     const waId = messageData.from; // Phone number with country code, e.g. "573001234567"
     const phoneId = value.metadata?.phone_number_id;
+    // Without a full number the pattern below would match every buyer of the project
+    if (String(waId || '').replace(/\D/g, '').length < 10) {
+      console.warn('[WHATSAPP WEBHOOK] message without a valid sender number');
+      return;
+    }
 
     // Find company by phone ID
     const company = await Company.findOne({ 'integrations.whatsappPhoneId': phoneId });
@@ -133,12 +151,14 @@ const processWebhookChange = async (value) => {
       companyId: company._id,
       phone: { $regex: phonePattern },
     });
-    if (!client) {
-      console.warn('[WHATSAPP WEBHOOK] message from a number with no client');
+    // A number that is not a buyer only has a chat if the team wrote to it first: its replies go there
+    let conv = client
+      ? await Conversation.findOne({ clientId: client._id })
+      : await Conversation.findOne({ tenantId: String(tenantId), companyId: company._id, waId: whatsappService.formatPhoneNumber(waId) });
+    if (!client && !conv) {
+      console.warn('[WHATSAPP WEBHOOK] message from a number with no client and no chat');
       return;
     }
-
-    let conv = await Conversation.findOne({ clientId: client._id });
     if (!conv) {
       conv = await Conversation.create({
         tenantId: client.tenantId,
@@ -156,7 +176,7 @@ const processWebhookChange = async (value) => {
 
     await Message.create({
       conversationId: conv._id,
-      tenantId: client.tenantId,
+      tenantId: String(tenantId),
       waId: messageData.id,
       direction: 'inbound',
       type: messageData.type === 'text' ? 'text' : 'button',
@@ -164,15 +184,7 @@ const processWebhookChange = async (value) => {
       status: 'received',
     });
     console.log(`[WHATSAPP WEBHOOK] inbound ${messageData.type} message stored`);
-    await recordCampaignReply({ tenantId, companyId: company._id, phonePattern }, text);
-    return;
-  }
-
-  // Status updates (sent, delivered, read, failed)
-  for (const status of value.statuses || []) {
-    await Message.findOneAndUpdate({ waId: status.id }, { status: status.status });
-    await recordCampaignStatus(status);
-    console.log(`[WHATSAPP WEBHOOK] status ${status.status}`);
+    if (client) await recordCampaignReply({ tenantId, companyId: company._id, phonePattern }, text);
   }
 };
 
@@ -183,11 +195,12 @@ const REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 // A short reply asking to stop opts the buyer out: «BAJA», «Baja por favor», «darme de baja», «STOP»…
 const OPT_OUT_KEYWORDS = new Set(['baja', 'stop', 'parar']);
 // Words that may come with the keyword: «Baja por favor», «quiero la baja», «darme de baja ya»
-const OPT_OUT_COURTESY = new Set(['por', 'favor', 'porfa', 'porfavor', 'gracias', 'quiero', 'solicito', 'pido', 'la', 'de', 'me', 'dar', 'darme', 'ya', 'una', 'el', 'a', 'y', 'ok']);
-const OPT_OUT_PHRASE = /(darme de baja|cancelar suscripci[oó]n|no (quiero|deseo) (recibir )?(m[aá]s )?mensajes|no me escriban|no m[aá]s mensajes)/i;
+const OPT_OUT_COURTESY = new Set(['por', 'favor', 'porfa', 'porfavor', 'gracias', 'quiero', 'solicito', 'pido', 'la', 'de', 'me', 'dar', 'darme', 'deme', 'dame', 'denme', 'dan', 'den', 'ya', 'una', 'el', 'a', 'y', 'ok', 'buenas', 'hola']);
+// «Deme de baja», «me dan de baja», «no me envíen más mensajes», «no quiero que me escriban», «no enviar más mensajes»
+const OPT_OUT_PHRASE = /((dar|de|da|den)me de baja|me (dan|den|da|dar) de baja|cancelar suscripci[oó]n|no (quiero|deseo) (recibir )?(m[aá]s )?mensajes|no (quiero|deseo) que me (escriban|env[ií]en)|no me (escriban|env[ií]en)|no (enviar|env[ií]en|manden|mandar) m[aá]s|no m[aá]s mensajes)/i;
 export const isOptOut = (text) => {
   const clean = String(text || '').normalize('NFC').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (!clean || clean.length > 40) return false;
+  if (!clean || clean.length > 60) return false;
   if (OPT_OUT_PHRASE.test(clean)) return true;
   const words = clean.toLowerCase().split(' ');
   return words.some((w) => OPT_OUT_KEYWORDS.has(w)) && words.every((w) => OPT_OUT_KEYWORDS.has(w) || OPT_OUT_COURTESY.has(w));
@@ -265,10 +278,14 @@ export const sendMessage = async (req, res, next) => {
 
     if (!phone) return next(new AppError('Se requiere un número de teléfono o ID de cliente', 400));
 
-    // If no client provided but we have phone, try to find one
-    if (!client) {
-      const last10Digits = phone.toString().slice(-10);
-      client = await Client.findOne({ tenantId, companyId, phone: { $regex: last10Digits } });
+    // If no client provided but we have phone, try to find one (by its last 10 digits, as stored)
+    if (!client && String(phone).replace(/\D/g, '').length >= 10) {
+      client = await Client.findOne({ tenantId, companyId, phone: { $regex: phoneDigitsPattern(phone) } });
+    }
+
+    // A buyer who asked not to be written to gets no templates; answering inside their own chat stays possible
+    if (templateName && client?.contactConsent?.status === 'baja') {
+      return next(new AppError('Este comprador pidió no recibir mensajes. Solo puedes responderle si te escribe.', 403));
     }
 
     const waConfig = await accountOf(req);
@@ -285,7 +302,8 @@ export const sendMessage = async (req, res, next) => {
     const waId = whatsappService.formatPhoneNumber(phone);
 
     // Update conversation and store message
-    let conv = await Conversation.findOne({ waId, tenantId });
+    // The chat of this project's number: the same number may have another chat in another project
+    let conv = await Conversation.findOne({ waId, tenantId, ...projectScope(companyId) });
     if (!conv) {
       conv = await Conversation.create({
         tenantId,

@@ -299,6 +299,8 @@ router.get('/:id/recipients', canSend, async (req, res, next) => {
     const filter = { campaignId: campaign._id };
     if (req.query.status === 'replied') filter.repliedAt = { $ne: null };
     else if (req.query.status === 'opted_out') filter.optedOutAt = { $ne: null };
+    // «Enviados» in the figures: everything that left, whatever Meta reported afterwards
+    else if (req.query.status === 'reached') filter.status = { $in: ['sent', 'delivered', 'read'] };
     else if (req.query.status) filter.status = String(req.query.status);
     const [rows, total] = await Promise.all([
       CampaignRecipient.find(filter).sort({ _id: 1 }).skip((page - 1) * limit).limit(limit).populate('clientId', 'name idNumber').lean(),

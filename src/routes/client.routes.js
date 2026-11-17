@@ -462,7 +462,10 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREATE)
       details: { name, idNumber, portalAccess: !!(email && password) }
     });
 
-    res.status(201).json({ success: true, data: client });
+    // The data-validation token only travels in the message to the buyer
+    const created = client.toObject();
+    delete created.validationToken;
+    res.status(201).json({ success: true, data: created });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -479,7 +482,7 @@ router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREAT
       { _id: id, tenantId, companyId },
       { name, idNumber, phone, email, address, behavior },
       { new: true, runValidators: true }
-    );
+    ).select('-validationToken');
 
     if (!client) {
       return res.status(404).json({ success: false, message: 'Cliente no encontrado' });

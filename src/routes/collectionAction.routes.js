@@ -136,6 +136,23 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP
       promiseData = { amount, dueDate };
     }
 
+    // A double click or a retry must not leave two identical actions (two promises for one payment)
+    const cleanNotes = typeof notes === 'string' ? notes.trim().slice(0, 2000) : undefined;
+    const twin = await CollectionAction.findOne({
+      tenantId,
+      companyId,
+      clientId,
+      createdBy: userId,
+      channel,
+      result,
+      contractId: contractId || { $in: [null, undefined] },
+      createdAt: { $gte: new Date(Date.now() - 60 * 1000) },
+      ...(promiseData ? { 'promise.amount': promiseData.amount, 'promise.dueDate': promiseData.dueDate } : { 'promise.dueDate': { $exists: false } }),
+    }).sort({ createdAt: -1 });
+    if (twin && (twin.notes || '') === (cleanNotes || '')) {
+      return res.status(200).json({ success: true, data: twin, duplicate: true });
+    }
+
     const action = await CollectionAction.create({
       tenantId,
       companyId,
@@ -143,7 +160,7 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_FOLLOWUP
       contractId: contractId || undefined,
       channel,
       result,
-      notes: typeof notes === 'string' ? notes.trim().slice(0, 2000) : undefined,
+      notes: cleanNotes,
       promise: promiseData,
       createdBy: userId,
       createdByName: fullName,

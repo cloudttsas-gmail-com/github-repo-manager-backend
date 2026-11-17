@@ -175,6 +175,25 @@ export const buildAudience = async ({ tenantId, companyId, filters, exclusions =
   const hasReceipt = withReceipt ? new Set(withReceipt.map(String)) : null;
   const weeklyLimit = policy?.weeklyLimit || 1;
 
+  // The opt-out and the weekly limit belong to the number, not to one buyer: a couple sharing a
+  // mobile is one person on WhatsApp. Every buyer of the project counts, also those outside this send
+  const matchedPhones = new Set(matched.map((row) => mobilePhone(row.client.phone)).filter(Boolean));
+  const sharing = matchedPhones.size
+    ? (await Client.find({ tenantId: toId(tenantId), companyId: toId(companyId), phone: { $nin: [null, ''] } })
+      .select('phone contactConsent.status').lean())
+      .map((client) => ({ id: String(client._id), phone: mobilePhone(client.phone), optedOut: client.contactConsent?.status === 'baja' }))
+      .filter((client) => client.phone && matchedPhones.has(client.phone))
+    : [];
+  const optedOutPhones = new Set(sharing.filter((client) => client.optedOut).map((client) => client.phone));
+  const matchedIds = new Set(ids.map(String));
+  const partnerIds = sharing.filter((client) => !matchedIds.has(client.id)).map((client) => client.id);
+  const partnerWeekly = partnerIds.length ? await weeklyWhatsAppContacts({ tenantId, companyId, clientIds: partnerIds }, now) : new Map();
+  const weeklyByPhone = new Map();
+  for (const client of sharing) {
+    const count = (weekly.get(client.id) || 0) + (partnerWeekly.get(client.id) || 0);
+    if (count) weeklyByPhone.set(client.phone, (weeklyByPhone.get(client.phone) || 0) + count);
+  }
+
   const excluded = {};
   const reasons = new Map();
   const recipients = [];
@@ -186,12 +205,12 @@ export const buildAudience = async ({ tenantId, companyId, filters, exclusions =
     let reason = null;
     if (!phone) reason = 'no_phone';
     else if (phones.has(phone)) reason = 'duplicate_phone';
-    else if (consent === 'baja') reason = 'opted_out';
+    else if (consent === 'baja' || optedOutPhones.has(phone)) reason = 'opted_out';
     else if (category === 'MARKETING' && consent !== 'autorizado') reason = 'no_consent';
     else if (hasReceipt && !hasReceipt.has(id)) reason = 'no_document';
     else if (inReview.has(id)) reason = 'pending_payment';
     else if (promised.has(id)) reason = 'open_promise';
-    else if ((weekly.get(id) || 0) >= weeklyLimit) reason = 'weekly_limit';
+    else if (Math.max(weekly.get(id) || 0, weeklyByPhone.get(phone) || 0) >= weeklyLimit) reason = 'weekly_limit';
     if (reason) {
       excluded[reason] = (excluded[reason] || 0) + 1;
       reasons.set(id, reason);

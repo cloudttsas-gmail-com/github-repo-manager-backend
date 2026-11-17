@@ -13,6 +13,20 @@ import { buildSalePlan, PLAN_RULES_VERSION, toCalendarDate, toISODate } from '..
 import { getPaymentPlanPolicy } from '../services/paymentPlan.service.js';
 import { escapeRegex } from '../utils/regex.js';
 
+// What a sale or a reservation may set on a new buyer: contact data only, never consent, verification
+// flags or ownership fields
+const BUYER_FIELDS = ['name', 'idNumber', 'phone', 'email', 'address', 'behavior'];
+const buyerFields = (data = {}) => Object.fromEntries(BUYER_FIELDS.filter((key) => data[key] !== undefined).map((key) => [key, data[key]]));
+
+/** A buyer as the panel may see it: the data-validation token only travels in the message to the buyer */
+const withoutValidationToken = (client) => {
+  if (!client) return client;
+  const plain = typeof client.toObject === 'function' ? client.toObject() : { ...client };
+  delete plain.validationToken;
+  return plain;
+};
+
+
 export const createLot = async (req, res, next) => {
   try {
     const { tenantId, companyId } = req.user;
@@ -271,7 +285,8 @@ export const getLot = async (req, res, next) => {
         path: 'sellerId',
         populate: { path: 'accountId', select: 'fullName email' },
       })
-      .populate('reservationBy')
+      // Only what the record shows: never the whole buyer (it carries the data-validation token)
+      .populate('reservationBy', 'name idNumber phone email')
       .populate('deletedBy', 'accountId')
       .lean();
 
@@ -764,7 +779,7 @@ export const sellLot = async (req, res, next) => {
       
       if (!client) {
         client = await Client.create({
-          ...clientData,
+          ...buyerFields(clientData),
           tenantId,
           companyId,
         });
@@ -872,7 +887,7 @@ export const sellLot = async (req, res, next) => {
       message: 'Lote vendido exitosamente y contrato generado con cuotas',
       data: {
         contract,
-        client,
+        client: withoutValidationToken(client),
       },
     });
   } catch (error) {
@@ -990,7 +1005,7 @@ export const reserveLot = async (req, res, next) => {
         client = await Client.findOne({ idNumber: clientData.idNumber, tenantId, companyId });
       }
       if (!client) {
-        client = await Client.create({ ...clientData, tenantId, companyId });
+        client = await Client.create({ ...buyerFields(clientData), tenantId, companyId });
       }
     } else {
       return res.status(400).json({ success: false, message: 'Debe proporcionar datos del cliente' });
@@ -1117,9 +1132,12 @@ export const assignLotSeller = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Este lote no tiene un contrato asociado para vincular asesor' });
     }
 
+    // Same rule as a sale: an active member of this team, never a buyer's portal user
     const User = (await import('../models/User.js')).default;
-    const seller = await User.findOne({ _id: sellerId, tenantId }).populate('accountId');
-    if (!seller) return res.status(400).json({ success: false, message: 'El asesor seleccionado no existe' });
+    const seller = mongoose.isValidObjectId(sellerId)
+      ? await User.findOne({ _id: sellerId, tenantId, status: 'active', role: { $ne: 'cliente' } }).populate('accountId')
+      : null;
+    if (!seller) return res.status(400).json({ success: false, message: 'El asesor seleccionado no es del equipo' });
 
     contract.sellerId = seller._id;
     await contract.save();
@@ -1130,6 +1148,8 @@ export const assignLotSeller = async (req, res, next) => {
     }
 
     // Generar comisión si el contrato histórico no tiene una (alimenta comisiones e informes)
+    // Says whether the commission stayed with the previous seller, so the panel can warn about it
+    let commissionWarning = null;
     try {
       const { buildCommissionForContract, evaluateCommissionMilestones } = await import('../services/commission.service.js');
       const Commission = (await import('../models/Commission.js')).default;
@@ -1141,17 +1161,20 @@ export const assignLotSeller = async (req, res, next) => {
         // Nothing filed yet: the commission follows the contract's new seller
         existing.sellerId = seller._id;
         await existing.save();
+      } else if (String(existing.sellerId) !== String(seller._id)) {
+        commissionWarning = 'La comisión de este contrato ya tiene cuotas radicadas, aprobadas o pagadas y sigue a nombre del asesor anterior.';
       }
       await evaluateCommissionMilestones({ contractId: contract._id, tenantId, companyId });
     } catch (commissionError) {
       console.error('[ASSIGN_SELLER][COMMISSION] Error generando comisión:', commissionError);
+      commissionWarning = 'El asesor quedó en el contrato, pero la comisión no se pudo actualizar. Revísala en Comisiones.';
     }
 
     await logAudit(req, {
       action: 'ASSIGN_SELLER',
       module: 'LOTS',
       targetId: lot._id,
-      details: { contractId: contract._id, sellerId: seller._id }
+      details: { contractId: contract._id, sellerId: seller._id, ...(commissionWarning ? { commissionWarning } : {}) }
     });
 
     res.status(200).json({
@@ -1161,6 +1184,7 @@ export const assignLotSeller = async (req, res, next) => {
         contractId: contract._id,
         sellerId: seller._id,
         sellerName: seller.accountId?.fullName || seller.email || 'Asesor',
+        commissionWarning,
       },
     });
   } catch (error) {
