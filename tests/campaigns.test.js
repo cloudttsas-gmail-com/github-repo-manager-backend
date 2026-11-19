@@ -266,6 +266,7 @@ describe('Sends (/api/campaigns)', () => {
 
   it('creates a send, delivers it in contact hours and records Meta reports, replies and opt-outs', async () => {
     process.env.ENABLE_NOTIFICATIONS = 'true';
+    sent.length = 0;
     const created = await request(app).post(`/api/campaigns?${q()}`).set('Authorization', `Bearer ${a.token}`)
       .send({ name: 'Mora noviembre', template: { name: 'recordatorio_mora', language: 'es' }, filters: { mora: 'en_mora' } });
     expect(created.statusCode).toBe(201);
@@ -276,7 +277,12 @@ describe('Sends (/api/campaigns)', () => {
     const scheduledAt = new Date(created.body.data.scheduledAt);
     let at = new Date(Math.max(scheduledAt.getTime(), Date.now()) + 7 * DAY);
     while (!isWithinContactHours(at, resolveContactPolicy())) at = new Date(at.getTime() + 60 * 60 * 1000);
-    sent.length = 0;
+    // Created inside contact hours, the send already went out on its own round (kickCampaigns);
+    // outside them it waits for this one. Either way one message goes out, once
+    for (let round = 0; round < 40 && sent.length === 0; round += 1) {
+      await processCampaigns(() => at);
+      if (sent.length === 0) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     await processCampaigns(() => at);
     expect(sent).toHaveLength(1);
     expect(sent[0].to).toBe('+573001110001');

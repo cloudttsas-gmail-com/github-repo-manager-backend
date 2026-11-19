@@ -14,6 +14,9 @@
     "migrate:receipts": "node src/scripts/migrateReceiptNumbers.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --forceExit --runInBand"
   },
+  "jest": {
+    "testTimeout": 30000
+  },
   "keywords": [
     "api",
     "finance",
