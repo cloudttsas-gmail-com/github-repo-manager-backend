@@ -1,3 +1,4 @@
+import { agencyName } from '../utils/agency.js';
 import crypto from 'crypto';
 import { isValidPublicLink, allowsUnsignedLink } from '../utils/publicLinks.js';
 import Client from '../models/Client.js';
@@ -537,7 +538,7 @@ export const sendOTPCodePublic = async (req, res, next) => {
     }
 
     const { sendOTPCode } = await import('../utils/otpHelper.js');
-    const token = await sendOTPCode(client.tenantId, company._id, client._id, type, destination, company.name, purpose);
+    const token = await sendOTPCode(client.tenantId, company._id, client._id, type, destination, await agencyName(company), purpose);
 
     res.json({
       success: true,

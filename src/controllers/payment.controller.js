@@ -8,6 +8,7 @@ import PaymentAttempt from '../models/PaymentAttempt.js';
 import { getNextSequence } from '../models/Counter.js';
 import AppError from '../utils/AppError.js';
 import { sendEmail } from '../utils/notifications.js';
+import { agencyName } from '../utils/agency.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
@@ -211,7 +212,6 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
         notice: 'pago_recibido',
         values: {
           clientName: fullQuota.contract.client.name,
-          companyName: company?.name || 'su inmobiliaria',
           amount: money(fullQuota.amountPaid || fullQuota.value),
           date: shortDate(fullQuota.paymentDate || new Date()),
           property: propertyName(fullQuota.contract.lot, company?.propertyType),
@@ -225,7 +225,8 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
     // Send Email
     const clientEmail = fullQuota.contract.client.email;
     if (clientEmail) {
-      const subject = `Recibo de Pago: Cuota #${fullQuota.number} - ${company?.name || 'Recaudos'}`;
+      const agency = await agencyName(company, 'Recaudos');
+      const subject = `Recibo de Pago: Cuota #${fullQuota.number} - ${agency}`;
       const htmlMessage = `
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
           <h2 style="color: #007cba;">Confirmación de Pago</h2>
@@ -250,7 +251,7 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
 
           <p style="font-size: 12px; color: #777; border-top: 1px solid #eee; pt: 15px; margin-top: 25px;">
             Gracias por tu puntualidad.<br>
-            <strong>${company?.name || 'Inmobiliaria'}</strong>
+            <strong>${agency}</strong>
           </p>
         </div>
       `;

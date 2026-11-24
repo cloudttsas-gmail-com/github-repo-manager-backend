@@ -81,7 +81,7 @@ export const lastPayments = async ({ tenantId, companyId, clientIds }) => {
 const filled = (value) => (value === undefined || value === null || String(value).trim() === '' ? '-' : String(value));
 
 /** The value of each Operix datum for one buyer and their main contract. */
-export const recipientValues = ({ company, client, contract, summary, lastPayment }) => {
+export const recipientValues = ({ company, agency, client, contract, summary, lastPayment }) => {
   const next = summary?.nextQuota;
   return {
     nombre_comprador: filled(client?.name),
@@ -92,6 +92,7 @@ export const recipientValues = ({ company, client, contract, summary, lastPaymen
     dias_mora: filled(summary?.daysOverdue ?? 0),
     saldo_pendiente: filled(money(summary?.balance || 0)),
     valor_ultimo_pago: filled(lastPayment ? money(lastPayment.amount) : null),
+    nombre_inmobiliaria: filled(agency),
     nombre_proyecto: filled(company?.name),
     telefono_proyecto: filled(company?.phone),
   };

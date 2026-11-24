@@ -15,7 +15,8 @@ import AuditLog from '../models/AuditLog.js';
 import { claimPaymentRequest } from '../utils/idempotency.js';
 import { campaignTemplates, lastPayments, recipientValues, renderBody, sendComponents } from '../services/campaignTemplates.service.js';
 import { kickCampaigns } from '../services/campaignSender.service.js';
-import { DEFAULT_CONTACT_POLICY, nextContactWindow, resolveContactPolicy, validateContactPolicy } from '../services/contactPolicy.service.js';
+import { LEGAL_CONTACT_POLICY, nextContactWindow, resolveContactPolicy, validateContactPolicy } from '../services/contactPolicy.service.js';
+import { agencyName } from '../utils/agency.js';
 import { companyWhatsAppAccount } from '../services/whatsappTemplates.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
 
@@ -56,12 +57,12 @@ const pickTemplate = async (company, input) => {
 
 const excludedList = (excluded = {}) => Object.entries(excluded).map(([reason, count]) => ({ reason, label: SKIP_LABELS[reason] || reason, count }));
 
-/** GET /api/campaigns/policy: the project's contact hours and weekly limit, with the defaults. */
+/** GET /api/campaigns/policy: the project's contact hours and weekly limit, with the legal limits (`defaults`). */
 router.get('/policy', canSend, async (req, res, next) => {
   try {
     const company = await loadCompany(req);
     if (!company) return notFound(res, 'Proyecto no encontrado');
-    res.json({ success: true, data: { policy: resolveContactPolicy(company.contactPolicy), defaults: DEFAULT_CONTACT_POLICY } });
+    res.json({ success: true, data: { policy: resolveContactPolicy(company.contactPolicy), defaults: LEGAL_CONTACT_POLICY } });
   } catch (error) { next(error); }
 });
 
@@ -77,7 +78,7 @@ router.put('/policy', checkPermission(PERMISSIONS.CONFIG_TENANT), async (req, re
     await company.save();
     const policy = resolveContactPolicy(company.contactPolicy);
     await logAudit(req, { action: 'UPDATE_CONTACT_POLICY', module: 'COMPANIES', targetId: company._id, details: { before, after: policy } });
-    res.json({ success: true, data: { policy, defaults: DEFAULT_CONTACT_POLICY } });
+    res.json({ success: true, data: { policy, defaults: LEGAL_CONTACT_POLICY } });
   } catch (error) { next(error); }
 });
 
@@ -120,7 +121,7 @@ router.post('/preview', canSend, async (req, res, next) => {
     let preview = null;
     if (template && sample) {
       const payments = await lastPayments({ tenantId: toId(tenantId), companyId: toId(companyId), clientIds: [sample.client._id] });
-      const values = recipientValues({ company, client: sample.client, contract: sample.contract, summary: sample.summary, lastPayment: payments.get(String(sample.client._id)) });
+      const values = recipientValues({ company, agency: await agencyName(company), client: sample.client, contract: sample.contract, summary: sample.summary, lastPayment: payments.get(String(sample.client._id)) });
       preview = { clientId: sample.client._id, clientName: sample.client.name, body: renderBody(template.body, values), values };
     }
 
@@ -366,7 +367,7 @@ router.post('/test', canSend, async (req, res, next) => {
     if (!sample) return badRequest(res, 'Con estos filtros no hay un comprador para tomar los datos de la prueba.');
     const payments = await lastPayments({ tenantId: toId(tenantId), companyId: toId(companyId), clientIds: [sample.client._id] });
     const ctx = { contract: sample.contract, lastPayment: payments.get(String(sample.client._id)), apiUrl: process.env.API_URL || '' };
-    const values = recipientValues({ company, client: sample.client, summary: sample.summary, ...ctx });
+    const values = recipientValues({ company, agency: await agencyName(company), client: sample.client, summary: sample.summary, ...ctx });
     let components;
     try { components = sendComponents(template, values, ctx); } catch (error) { return badRequest(res, error.message); }
     try {

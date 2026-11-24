@@ -245,7 +245,8 @@ export const login = async (req, res, next) => {
       const { sendOTPCode } = await import('../utils/otpHelper.js');
       const Company = (await import('../models/Company.js')).default;
       const company = await Company.findById(client.companyId);
-      const companyName = company?.name || 'Inmobiliaria';
+      const { agencyName } = await import('../utils/agency.js');
+      const agency = await agencyName(company, 'Inmobiliaria');
 
       const otpToken = await sendOTPCode(
         clientMembership.tenantId._id,
@@ -253,7 +254,7 @@ export const login = async (req, res, next) => {
         client._id,
         'phone', // Satisfies VerificationToken schema validation enum
         client.phone,
-        companyName,
+        agency,
         'login'
       );
 

@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { GRAPH_API_URL } from '../config/meta.js';
 import { whatsappService } from './whatsapp.service.js';
 import AppError from '../utils/AppError.js';
+import { agencyName, inProject } from '../utils/agency.js';
 import Lot from '../models/Lot.js';
 import Quota from '../models/Quota.js';
 import Contract from '../models/Contract.js';
@@ -12,7 +13,8 @@ import { resolvePaymentPlanPolicy, toCalendarDate, dayInMonth, compareCalendar }
  * Every company sends from its own number and its own WhatsApp Business account (WABA),
  * with templates that live in that account. Without a connected number nothing goes out by
  * WhatsApp (the email of each notice still does). Texts approved by Sebastián on 11 Nov 2026
- * (planes/2026-11-11-plantillas-meta-textos.md).
+ * (planes/2026-11-11-plantillas-meta-textos.md); tone and inmobiliaria/project data reviewed
+ * with Mario on 24 Nov 2026 (planes/2026-11-24-feedback-mario.md).
  */
 
 const LANGUAGE = 'es';
@@ -50,7 +52,7 @@ const publicApiBase = () => `${apiUrl()}/api/public/`;
 const publicPageBase = () => `${frontendUrl()}/p/`;
 
 const body = (text, example) => ({ type: 'BODY', text, example: { body_text: [example] } });
-const footer = (companyName) => ({ type: 'FOOTER', text: String(companyName || 'Operix').slice(0, FOOTER_MAX) });
+const footer = (agency) => ({ type: 'FOOTER', text: String(agency || 'Operix').slice(0, FOOTER_MAX) });
 const documentHeader = (handle) => ({ type: 'HEADER', format: 'DOCUMENT', example: { header_handle: [handle] } });
 const urlButton = (text, base, exampleSuffix) => ({ type: 'URL', text, url: `${base}{{1}}`, example: [`${base}${exampleSuffix}`] });
 
@@ -64,8 +66,11 @@ export const internationalPhone = (phone) => {
 
 const EXAMPLE = {
   client: 'Laura Gómez',
-  company: 'Inmobiliaria Horizonte',
+  agency: 'Inmobiliaria Horizonte',
+  project: 'Marbella',
   property: 'el lote 12 de la manzana B',
+  // What the notices say: the property and the project it is in
+  propertyInProject: 'el lote 12 de la manzana B en el proyecto Marbella',
   money: '$1.250.000',
   date: '15/03/2027',
 };
@@ -85,60 +90,60 @@ export const DEFAULT_TEMPLATES = {
   },
   operix_bienvenida: {
     category: 'UTILITY',
-    // Tied to the purchase, without a welcome header or thanks: Meta took that version for marketing
-    components: ({ companyName }) => [
+    // Wording asked by Mario (24 Nov 2026). Meta took an earlier welcome (with header and thanks) for marketing
+    components: ({ agency }) => [
       body(
-        'Hola {{1}}, {{2}} registró la compra de {{3}} a su nombre.\n\nPor este WhatsApp recibirá su plan de pagos, los recibos de cada pago y los avisos de sus cuotas. Puede consultar su estado de cuenta con su número de documento y un código que le llegará aquí.',
-        [EXAMPLE.client, EXAMPLE.company, EXAMPLE.property],
+        'Hola {{1}}, en {{2}} te damos la bienvenida al comienzo de tus sueños con {{3}}.\n\nPor este WhatsApp te llegarán tu plan de pagos, los recibos de cada pago y los avisos de tus cuotas. Cuando quieras, consulta tu estado de cuenta con tu número de documento y el código que te enviaremos aquí.',
+        [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.propertyInProject],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Consultar mi estado de cuenta', publicPageBase(), 'inmobiliaria-horizonte/statement')] },
     ],
   },
   operix_validar_datos: {
     category: 'UTILITY',
-    components: ({ companyName }) => [
+    components: ({ agency }) => [
       body(
-        'Hola {{1}}, {{2}} le pide confirmar sus datos de contacto para enviarle recibos y avisos de {{3}}.\n\nSolo toma un minuto.',
-        [EXAMPLE.client, EXAMPLE.company, EXAMPLE.property],
+        'Hola {{1}}, en {{2}} queremos que le lleguen a tiempo los recibos y avisos sobre {{3}}. ¿Nos ayuda a confirmar sus datos de contacto?\n\nSolo toma un minuto.',
+        [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.propertyInProject],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Confirmar mis datos', publicPageBase(), 'inmobiliaria-horizonte/validate-client?token=ejemplo')] },
     ],
   },
   operix_plan_pagos: {
     category: 'UTILITY',
     documentHeader: true,
-    components: ({ companyName, handle }) => [
+    components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, le compartimos el plan de pagos de {{2}} con {{3}}: {{4}} cuotas, la primera el {{5}}.\n\nGuarde este documento para consultar las fechas y los valores de cada cuota.',
-        [EXAMPLE.client, EXAMPLE.property, EXAMPLE.company, '24', EXAMPLE.date],
+        'Hola {{1}}, le compartimos el plan de pagos para {{2}} con {{3}}: {{4}} cuotas, la primera el {{5}}.\n\nGuarde este documento para tener a mano las fechas y los valores. Si algo no le queda claro, escríbanos por este chat.',
+        [EXAMPLE.client, EXAMPLE.propertyInProject, EXAMPLE.agency, '24', EXAMPLE.date],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Ver mi estado de cuenta', publicApiBase(), 'statement/ejemplo')] },
     ],
   },
   operix_plan_actualizado: {
     category: 'UTILITY',
     documentHeader: true,
-    components: ({ companyName, handle }) => [
+    components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, {{2}} actualizó el plan de pagos de {{3}}. Motivo: {{4}}.\n\nDesde la cuota {{5}} rigen las fechas y los valores del documento adjunto.',
-        [EXAMPLE.client, EXAMPLE.company, EXAMPLE.property, 'cambio del día de pago', '3'],
+        'Hola {{1}}, en {{2}} actualizamos el plan de pagos para {{3}}. Motivo: {{4}}.\n\nDesde la cuota {{5}} aplican las fechas y los valores del documento adjunto. Si tiene preguntas, con gusto le ayudamos por este chat.',
+        [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.propertyInProject, 'cambio del día de pago', '3'],
       ),
-      footer(companyName),
+      footer(agency),
     ],
   },
   operix_cuota_por_vencer: {
     category: 'UTILITY',
-    components: ({ companyName }) => [
+    components: ({ agency }) => [
       body(
-        'Hola {{1}}, le recordamos que la cuota {{2}} de {{3}} por {{4}} vence el {{5}}.\n\nSi ya pagó, no tiene que hacer nada; recibirá su recibo cuando {{6}} confirme el pago.',
-        [EXAMPLE.client, '5', EXAMPLE.property, EXAMPLE.money, EXAMPLE.date, EXAMPLE.company],
+        'Hola {{1}}, esperamos que esté muy bien. Le recordamos que la cuota {{2}} para {{3}}, por {{4}}, vence el {{5}}.\n\nSi ya pagó, no se preocupe: recibirá su recibo cuando {{6}} confirme el pago.',
+        [EXAMPLE.client, '5', EXAMPLE.propertyInProject, EXAMPLE.money, EXAMPLE.date, EXAMPLE.agency],
       ),
-      footer(companyName),
+      footer(agency),
       {
         type: 'BUTTONS',
         buttons: [
@@ -150,12 +155,12 @@ export const DEFAULT_TEMPLATES = {
   },
   operix_cuota_vencida: {
     category: 'UTILITY',
-    components: ({ companyName, companyPhone }) => [
+    components: ({ agency, companyPhone }) => [
       body(
-        'Hola {{1}}, la cuota {{2}} de {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya realizó el pago, por favor repórtelo para registrarlo. Si necesita un acuerdo, puede comunicarse con {{6}} por este mismo chat.',
-        [EXAMPLE.client, '5', EXAMPLE.property, EXAMPLE.date, EXAMPLE.money, EXAMPLE.company],
+        'Hola {{1}}, queremos ayudarle a ponerse al día. La cuota {{2}} para {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya pagó, cuéntenos para registrarlo. Si necesita un acuerdo, en {{6}} con gusto le escuchamos por este mismo chat.',
+        [EXAMPLE.client, '5', EXAMPLE.propertyInProject, EXAMPLE.date, EXAMPLE.money, EXAMPLE.agency],
       ),
-      footer(companyName),
+      footer(agency),
       {
         type: 'BUTTONS',
         buttons: [
@@ -169,37 +174,37 @@ export const DEFAULT_TEMPLATES = {
   operix_pago_recibido: {
     category: 'UTILITY',
     documentHeader: true,
-    components: ({ companyName, handle }) => [
+    components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, {{2}} confirmó su pago de {{3}} del {{4}} para {{5}}.\n\nAdjuntamos el recibo n.º {{6}}. Gracias por su pago.',
-        [EXAMPLE.client, EXAMPLE.company, EXAMPLE.money, EXAMPLE.date, EXAMPLE.property, '1024'],
+        'Hola {{1}}, ¡gracias por su pago! En {{2}} confirmamos {{3}} del {{4}} para {{5}}.\n\nAdjuntamos el recibo n.º {{6}} para que lo guarde.',
+        [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.money, EXAMPLE.date, EXAMPLE.propertyInProject, '1024'],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Ver mi estado de cuenta', publicApiBase(), 'statement/ejemplo')] },
     ],
   },
   operix_pago_rechazado: {
     category: 'UTILITY',
-    components: ({ companyName }) => [
+    components: ({ agency }) => [
       body(
-        'Hola {{1}}, {{2}} no pudo aprobar el pago de {{3}} que reportó el {{4}}. Motivo: {{5}}.\n\nPuede reportarlo de nuevo con el comprobante correcto.',
-        [EXAMPLE.client, EXAMPLE.company, EXAMPLE.money, EXAMPLE.date, 'el comprobante no es legible'],
+        'Hola {{1}}, en {{2}} revisamos el pago de {{3}} que reportó el {{4}} y todavía no pudimos aprobarlo. Motivo: {{5}}.\n\nPuede reportarlo de nuevo con el comprobante correcto. Si necesita ayuda, escríbanos por este chat.',
+        [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.money, EXAMPLE.date, 'el comprobante no es legible'],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Reportar el pago de nuevo', publicPageBase(), 'inmobiliaria-horizonte/payments')] },
     ],
   },
   operix_estado_cuenta: {
     category: 'UTILITY',
     documentHeader: true,
-    components: ({ companyName, handle }) => [
+    components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, este es su estado de cuenta de {{2}} con {{3}} al {{4}}: ha pagado {{5}} y su saldo es {{6}}.\n\nSu próxima cuota vence el {{7}}. En el documento adjunto está el detalle de cada cuota y de cada pago.',
-        [EXAMPLE.client, EXAMPLE.property, EXAMPLE.company, EXAMPLE.date, '$9.000.000', '$21.000.000', EXAMPLE.date],
+        'Hola {{1}}, le compartimos su estado de cuenta para {{2}} con {{3}} al {{4}}: ha pagado {{5}} y su saldo es {{6}}.\n\nSu próxima cuota vence el {{7}}. En el documento adjunto encuentra el detalle de cada cuota y de cada pago.',
+        [EXAMPLE.client, EXAMPLE.propertyInProject, EXAMPLE.agency, EXAMPLE.date, '$9.000.000', '$21.000.000', EXAMPLE.date],
       ),
-      footer(companyName),
+      footer(agency),
       { type: 'BUTTONS', buttons: [urlButton('Ver detalle', publicApiBase(), 'statement/ejemplo')] },
     ],
   },
@@ -259,7 +264,7 @@ export const ensureDefaultTemplates = async (company) => {
     handle = await uploadSampleDocument(account.accessToken);
   }
 
-  const context = { companyName: company.name, companyPhone: company.phone, handle };
+  const context = { agency: await agencyName(company), companyPhone: company.phone, handle };
   const results = [];
   for (const name of Object.keys(DEFAULT_TEMPLATES)) {
     const definition = DEFAULT_TEMPLATES[name];
@@ -314,22 +319,23 @@ export const publicPageSuffix = (url) => {
 /** Send parameters of each notice, in the order of its template. */
 const NOTICES = {
   codigo: (v) => [bodyParams([v.code]), urlParam(v.code)],
-  bienvenida: (v) => [bodyParams([v.clientName, v.companyName, v.property]), urlParam(`${v.slug}/statement`)],
-  validar_datos: (v) => [bodyParams([v.clientName, v.companyName, v.property]), urlParam(publicPageSuffix(v.validationUrl))],
+  bienvenida: (v) => [bodyParams([v.clientName, v.agency, v.property]), urlParam(`${v.slug}/statement`)],
+  validar_datos: (v) => [bodyParams([v.clientName, v.agency, v.property]), urlParam(publicPageSuffix(v.validationUrl))],
   pago_recibido: (v) => [
     documentParam(v.receiptUrl, `Recibo${v.receiptNumber ? ` ${v.receiptNumber}` : ''}.pdf`),
-    bodyParams([v.clientName, v.companyName, v.amount, v.date, v.property, v.receiptNumber]),
+    bodyParams([v.clientName, v.agency, v.amount, v.date, v.property, v.receiptNumber]),
     urlParam(publicLinkSuffix(v.statementUrl)),
   ],
   estado_cuenta: (v) => [
     documentParam(v.statementUrl, 'Estado de cuenta.pdf'),
-    bodyParams([v.clientName, v.property, v.companyName, v.date, v.paid, v.balance, v.nextDue]),
+    bodyParams([v.clientName, v.property, v.agency, v.date, v.paid, v.balance, v.nextDue]),
     urlParam(publicLinkSuffix(v.statementUrl)),
   ],
 };
 
 /**
  * Sends a notice to a buyer from the company's own number with its approved template.
+ * Fills in the inmobiliaria that signs it and the project the property is in.
  * Same result shape as sendWhatsApp: { success, provider, error } and never throws.
  */
 export const sendCompanyNotice = async ({ company, to, notice, values }) => {
@@ -342,7 +348,9 @@ export const sendCompanyNotice = async ({ company, to, notice, values }) => {
     return { success: false, provider: 'none', error: 'El proyecto no tiene un número de WhatsApp conectado' };
   }
   try {
-    const data = await whatsappService.sendTemplateMessage(account, to, `operix_${notice}`, LANGUAGE, NOTICES[notice](values));
+    const agency = await agencyName(company);
+    const property = [values.property, values.property && inProject(company, agency)].filter(Boolean).join(' ');
+    const data = await whatsappService.sendTemplateMessage(account, to, `operix_${notice}`, LANGUAGE, NOTICES[notice]({ ...values, agency, property }));
     return { success: true, provider: 'meta', data };
   } catch (error) {
     console.error(`[WHATSAPP NOTICE] ${notice} was not sent:`, error.message);
@@ -383,7 +391,8 @@ export const TEMPLATE_FIELDS = [
   { key: 'dias_mora', label: 'Días de mora', group: 'Cuota', example: () => '15' },
   { key: 'saldo_pendiente', label: 'Saldo pendiente', group: 'Contrato', example: (company, p) => p.balance || '$24.750.000' },
   { key: 'valor_ultimo_pago', label: 'Valor del último pago', group: 'Contrato', example: (company, p) => p.quota || '$2.250.000' },
-  { key: 'nombre_proyecto', label: 'Nombre del proyecto', group: 'Proyecto', example: (company) => company?.name || EXAMPLE.company },
+  { key: 'nombre_inmobiliaria', label: 'Nombre de la inmobiliaria', group: 'Inmobiliaria', example: (company, p) => p.agency || EXAMPLE.agency },
+  { key: 'nombre_proyecto', label: 'Nombre del proyecto', group: 'Proyecto', example: (company) => company?.name || EXAMPLE.project },
   { key: 'telefono_proyecto', label: 'Teléfono del proyecto', group: 'Proyecto', example: (company) => company?.phone || '601 555 1234' },
 ];
 
@@ -441,10 +450,11 @@ const roundMoney = (value) => money(Math.round(value / 1000) * 1000);
 export const projectSamples = async (company) => {
   if (!company?._id) return {};
   const scope = { companyId: company._id, tenantId: company.tenantId };
-  const [lot, quotas, contracts] = await Promise.all([
+  const [lot, quotas, contracts, agency] = await Promise.all([
     Lot.findOne({ ...scope, isDeleted: { $ne: true } }).sort({ createdAt: 1 }).select('lotNumber manzana propertyType').lean(),
     Quota.find({ ...scope, type: 'normal' }).sort({ createdAt: -1 }).limit(200).select('value').lean(),
     Contract.find(scope).sort({ createdAt: -1 }).limit(100).select('totalValue').lean(),
+    agencyName(company),
   ]);
   const quota = median(quotas.map((q) => q.value));
   const contractValue = median(contracts.map((c) => c.totalValue));
@@ -456,6 +466,7 @@ export const projectSamples = async (company) => {
     .find((cal) => compareCalendar(cal, today) > 0);
 
   return {
+    agency,
     property: lot ? propertyName(lot, company.propertyType) : null,
     quota: quota ? roundMoney(quota) : null,
     balance: contractValue ? roundMoney(contractValue * 0.6) : null,
@@ -541,11 +552,12 @@ export const buildTemplateEdit = async (company, current, input = {}, fields = t
     if (text.length > BODY_MAX) fail(`El cuerpo admite hasta ${BODY_MAX} caracteres.`);
     if (/^\{\{/.test(text)) fail('Meta no acepta un mensaje que empiece con un dato variable.');
     if (/\}\}$/.test(text.replace(/[.!?¡¿\s]+$/, ''))) fail('Meta no acepta un mensaje que termine con un dato variable.');
-    const expected = templateVariables(definition.components({ companyName: company.name, companyPhone: company.phone, handle: 'x' }).find((c) => c.type === 'BODY').text);
+    const agency = await agencyName(company);
+    const expected = templateVariables(definition.components({ agency, companyPhone: company.phone, handle: 'x' }).find((c) => c.type === 'BODY').text);
     const found = templateVariables(text);
     if (found.join() !== expected.join()) fail(`El mensaje debe conservar, una vez cada uno, los datos ${expected.map((n) => `{{${n}}}`).join(', ')}.`);
     const handle = definition.documentHeader ? await uploadSampleDocument(companyWhatsAppAccount(company).accessToken) : null;
-    const components = definition.components({ companyName: company.name, companyPhone: company.phone, handle })
+    const components = definition.components({ agency, companyPhone: company.phone, handle })
       .map((c) => (c.type === 'BODY' ? { ...c, text } : c));
     return { components };
   }

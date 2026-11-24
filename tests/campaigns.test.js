@@ -21,7 +21,7 @@ import { whatsappService } from '../src/services/whatsapp.service.js';
 import { processCampaigns } from '../src/services/campaignSender.service.js';
 import { analyzeTemplate } from '../src/services/campaignTemplates.service.js';
 import {
-  colombianHolidays, isWithinContactHours, nextContactWindow, resolveContactPolicy, startOfBogotaWeek, validateContactPolicy,
+  LEGAL_CONTACT_POLICY, colombianHolidays, isWithinContactHours, nextContactWindow, resolveContactPolicy, startOfBogotaWeek, validateContactPolicy,
 } from '../src/services/contactPolicy.service.js';
 
 const stamp = Date.now();
@@ -61,7 +61,7 @@ const TEMPLATES = [
   { name: 'pendiente_meta', language: 'es', status: 'PENDING', category: 'UTILITY', components: [{ type: 'BODY', text: 'Hola' }] },
 ];
 
-describe('Contact policy (Ley 2300 defaults)', () => {
+describe('Contact policy (Ley 2300 limits)', () => {
   const policy = resolveContactPolicy();
 
   it('knows the Colombian holidays of 2026', () => {
@@ -87,11 +87,24 @@ describe('Contact policy (Ley 2300 defaults)', () => {
     expect(nextContactWindow(now, policy)).toBe(now);
   });
 
+  it('cuts what a project saved outside the law, and keeps narrower hours', () => {
+    const wide = resolveContactPolicy({ weekdayStart: 5, weekdayEnd: 22, saturdayStart: 6, saturdayEnd: 20, allowSundays: true, allowHolidays: true, weeklyLimit: 7 });
+    expect(wide).toEqual(LEGAL_CONTACT_POLICY);
+    expect(isWithinContactHours(bogota('2026-11-22T10:00:00'), wide)).toBe(false);
+    expect(isWithinContactHours(bogota('2026-11-16T10:00:00'), wide)).toBe(false);
+    expect(resolveContactPolicy({ weekdayStart: 9, weekdayEnd: 17 })).toMatchObject({ weekdayStart: 9, weekdayEnd: 17 });
+  });
+
   it('starts the week on Monday in Bogotá and validates edits', () => {
     expect(startOfBogotaWeek(bogota('2026-11-22T23:00:00'))).toEqual(bogota('2026-11-16T00:00:00'));
     expect(() => validateContactPolicy({ weekdayStart: 20, weekdayEnd: 8 })).toThrow();
     expect(() => validateContactPolicy({ weeklyLimit: 0 })).toThrow();
-    expect(validateContactPolicy({ weeklyLimit: 2, allowSundays: 'true', allowHolidays: 'false' })).toEqual({ weeklyLimit: 2, allowSundays: true, allowHolidays: false });
+    expect(validateContactPolicy({ weekdayStart: 9, weeklyLimit: 1, allowSundays: false })).toEqual({ weekdayStart: 9 });
+    expect(() => validateContactPolicy({ weeklyLimit: 2 })).toThrow(/Ley 2300/);
+    expect(() => validateContactPolicy({ allowSundays: 'true' })).toThrow(/domingos/);
+    expect(() => validateContactPolicy({ allowHolidays: true })).toThrow(/festivos/);
+    expect(() => validateContactPolicy({ weekdayEnd: 20 })).toThrow(/19:00/);
+    expect(() => validateContactPolicy({ saturdayStart: 7 })).toThrow(/sábados/);
     // Checked against the saved policy: only the saturday end changes, and it must stay after its start
     expect(() => validateContactPolicy({ saturdayEnd: 9 }, { saturdayStart: 10 })).toThrow();
   });
@@ -341,8 +354,8 @@ describe('Sends (/api/campaigns)', () => {
     expect(denied.statusCode).toBe(403);
     const bad = await request(app).put(`/api/campaigns/policy?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ weekdayStart: 22 });
     expect(bad.statusCode).toBe(400);
-    const ok = await request(app).put(`/api/campaigns/policy?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ weeklyLimit: 2 });
-    expect(ok.body.data.policy).toMatchObject({ weeklyLimit: 2, weekdayStart: 7 });
+    const ok = await request(app).put(`/api/campaigns/policy?${q()}`).set('Authorization', `Bearer ${a.token}`).send({ weekdayStart: 9 });
+    expect(ok.body.data.policy).toMatchObject({ weeklyLimit: 1, weekdayStart: 9 });
   });
 
   it('due-in-N-days filter works from any arrears choice and counts Bogotá days; shared numbers get one message', async () => {

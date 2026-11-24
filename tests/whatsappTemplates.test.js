@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Company from '../src/models/Company.js';
 import Client from '../src/models/Client.js';
 import VerificationToken from '../src/models/VerificationToken.js';
+import Tenant from '../src/models/Tenant.js';
 import Lot from '../src/models/Lot.js';
 import Contract from '../src/models/Contract.js';
 import Quota from '../src/models/Quota.js';
@@ -43,7 +44,7 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
 
   it('the approved texts follow the Meta rules: no variable at the start or end, and one example per variable', () => {
     for (const [name, definition] of Object.entries(DEFAULT_TEMPLATES)) {
-      const components = definition.components({ companyName: connected.name, companyPhone: connected.phone, handle: 'h' });
+      const components = definition.components({ agency: connected.name, companyPhone: connected.phone, handle: 'h' });
       const bodyPart = components.find((c) => c.type === 'BODY');
       if (definition.category === 'AUTHENTICATION') continue;
       expect(bodyPart.text.trim().startsWith('{{')).toBe(false);
@@ -92,7 +93,7 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
         to: '3001234567',
         notice: 'pago_recibido',
         values: {
-          clientName: 'Laura', companyName: connected.name, amount: '$1.000', date: '01/03/2027', property: 'el lote 12',
+          clientName: 'Laura', amount: '$1.000', date: '01/03/2027', property: 'el lote 12',
           receiptNumber: 57, receiptUrl: 'https://api.test/api/public/receipt/attempt/abc?s=sig1', statementUrl: 'https://api.test/api/public/statement/xyz?s=sig2',
         },
       }));
@@ -106,6 +107,29 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('a notice is signed by the inmobiliaria and names the project the property is in', async () => {
+    const tenant = await Tenant.create({ name: `Constructora Norte ${stamp}` });
+    const spy = jest.spyOn(whatsappService, 'sendTemplateMessage').mockResolvedValue({ messages: [{ id: 'wamid.ok' }] });
+    try {
+      await withEnv({ ENABLE_NOTIFICATIONS: 'true' }, () => sendCompanyNotice({
+        company: { ...connected, name: 'Marbella', tenantId: tenant._id }, to: '3001234567', notice: 'bienvenida',
+        values: { clientName: 'Laura', property: 'el lote 12', slug: 'marbella' },
+      }));
+      expect(spy.mock.calls[0][4][0].parameters.map((p) => p.text)).toEqual(['Laura', tenant.name, 'el lote 12 en el proyecto Marbella']);
+    } finally {
+      spy.mockRestore();
+      await Tenant.deleteOne({ _id: tenant._id });
+    }
+  });
+
+  it('no notice starts or ends with a variable, or puts two together', () => {
+    Object.entries(DEFAULT_TEMPLATES).forEach(([, definition]) => {
+      const text = definition.components({ agency: 'X', handle: 'h' }).find((c) => c.type === 'BODY').text;
+      if (!text) return;
+      expect(text).not.toMatch(/^\{\{|\}\}[.!?\s]*$|\}\}\s*\{\{/);
+    });
   });
 
   it('a company without a number sends nothing by WhatsApp; with notices off nothing goes out at all', async () => {
@@ -149,7 +173,7 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
       expect(results.find((r) => r.name === 'operix_bienvenida')).toMatchObject({ result: 'resubmitted', status: 'PENDING' });
       expect(editSpy).toHaveBeenCalledTimes(1);
       expect(editSpy.mock.calls[0][1]).toBe('id-operix_bienvenida');
-      expect(editSpy.mock.calls[0][2].components.find((c) => c.type === 'BODY').text).not.toMatch(/gracias|bienvenid/i);
+      expect(editSpy.mock.calls[0][2].components.find((c) => c.type === 'BODY').text).toMatch(/te damos la bienvenida al comienzo de tus sueños/);
       expect(createSpy).not.toHaveBeenCalled();
     } finally {
       listSpy.mockRestore();
@@ -163,7 +187,7 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
     expect(internationalPhone('601 555 1234')).toBe('+576015551234');
     expect(internationalPhone('+57 300 123 4567')).toBe('+573001234567');
     expect(internationalPhone('12345')).toBeNull();
-    const buttons = DEFAULT_TEMPLATES.operix_cuota_vencida.components({ companyName: 'X', companyPhone: '12345' }).at(-1).buttons;
+    const buttons = DEFAULT_TEMPLATES.operix_cuota_vencida.components({ agency: 'X', companyPhone: '12345' }).at(-1).buttons;
     expect(buttons.map((b) => b.type)).toEqual(['URL']);
   });
 
@@ -192,7 +216,9 @@ describe('A company template only carries Operix data as named variables', () =>
       { param_name: 'fecha_vencimiento', example: '05/12/2026' },
     ]);
     expect(t.components.at(-1)).toEqual({ type: 'FOOTER', text: 'Proyecto Demo' });
-    expect(templateFieldsFor(company).find((f) => f.key === 'nombre_proyecto').example).toBe('Inmobiliaria Horizonte');
+    const fields = templateFieldsFor({ name: 'Marbella' }, { agency: 'Constructora Norte' });
+    expect(fields.find((f) => f.key === 'nombre_proyecto').example).toBe('Marbella');
+    expect(fields.find((f) => f.key === 'nombre_inmobiliaria').example).toBe('Constructora Norte');
   });
 
   it('a text without data is sent without parameter format or samples', () => {
@@ -231,7 +257,7 @@ describe('Editing a template sends it back to review without breaking what fills
   it('a notice of Operix only changes its text and must keep its data', async () => {
     const body = 'Hola {{1}}, {{2}} ya registró a su nombre la compra de {{3}} en el proyecto.';
     const edit = await buildTemplateEdit(connected, notice(), { body });
-    const original = DEFAULT_TEMPLATES.operix_bienvenida.components({ companyName: connected.name, companyPhone: connected.phone });
+    const original = DEFAULT_TEMPLATES.operix_bienvenida.components({ agency: connected.name, companyPhone: connected.phone });
     expect(edit.components.find((c) => c.type === 'BODY')).toEqual({ ...original.find((c) => c.type === 'BODY'), text: body });
     expect(edit.components.filter((c) => c.type !== 'BODY')).toEqual(original.filter((c) => c.type !== 'BODY'));
     await expect(buildTemplateEdit(connected, notice(), { body: 'Hola {{1}}, {{2}} registró su compra hoy.' })).rejects.toThrow(/conservar/);

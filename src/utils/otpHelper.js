@@ -11,7 +11,7 @@ import { sendCompanyNotice } from '../services/whatsappTemplates.service.js';
 const OTP_WINDOW_MS = 10 * 60 * 1000;
 const MAX_OTPS_PER_WINDOW = 3;
 
-export const sendOTPCode = async (tenantId, companyId, clientId, type, destination, companyName, purpose = 'payment') => {
+export const sendOTPCode = async (tenantId, companyId, clientId, type, destination, agency, purpose = 'payment') => {
   // Anyone who knows an id number can ask for a code, so cap how many reach the same client
   const recent = await VerificationToken.countDocuments({
     clientId,
@@ -47,7 +47,7 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
 
   let result;
   if (type === 'email') {
-    const subject = `Código de verificación de seguridad - ${companyName}`;
+    const subject = `Código de verificación de seguridad - ${agency}`;
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; color: #333; max-width: 500px; margin: 0 auto; border: 1px solid #eee; padding: 20px; border-radius: 8px;">
         <h3 style="color: #0284c7; text-align: center;">Código de Seguridad</h3>

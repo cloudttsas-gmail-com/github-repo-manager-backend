@@ -3,17 +3,15 @@ import CampaignRecipient from '../models/CampaignRecipient.js';
 import CollectionAction from '../models/CollectionAction.js';
 
 /**
- * When and how often a project may contact its buyers. Defaults follow Ley 2300 de 2023
- * (to be confirmed by legal): weekdays 7:00-19:00, Saturdays 8:00-15:00, no Sundays or
- * holidays, and one collection message a week per channel.
+ * When and how often a project may contact its buyers: the limits of Ley 2300 de 2023 (to be
+ * confirmed by legal). Weekdays 7:00-19:00, Saturdays 8:00-15:00, never Sundays or holidays, and
+ * one collection message a week per channel. A project can narrow the hours, never widen them.
  */
-export const DEFAULT_CONTACT_POLICY = {
+export const LEGAL_CONTACT_POLICY = {
   weekdayStart: 7,
   weekdayEnd: 19,
   saturdayStart: 8,
   saturdayEnd: 15,
-  allowSundays: false,
-  allowHolidays: false,
   weeklyLimit: 1,
 };
 
@@ -24,40 +22,42 @@ const BOGOTA_OFFSET_MS = -5 * HOUR_MS;
 
 const hour = (value, fallback) => (Number.isInteger(value) && value >= 0 && value <= 24 ? value : fallback);
 
-/** The project's policy with defaults for anything missing or out of range. */
+/** The project's hours inside the legal ones; anything saved outside them is cut to the limit. */
 export const resolveContactPolicy = (policy = {}) => {
   const p = policy || {};
-  const d = DEFAULT_CONTACT_POLICY;
+  const law = LEGAL_CONTACT_POLICY;
   const resolved = {
-    weekdayStart: hour(p.weekdayStart, d.weekdayStart),
-    weekdayEnd: hour(p.weekdayEnd, d.weekdayEnd),
-    saturdayStart: hour(p.saturdayStart, d.saturdayStart),
-    saturdayEnd: hour(p.saturdayEnd, d.saturdayEnd),
-    allowSundays: typeof p.allowSundays === 'boolean' ? p.allowSundays : d.allowSundays,
-    allowHolidays: typeof p.allowHolidays === 'boolean' ? p.allowHolidays : d.allowHolidays,
-    weeklyLimit: Number.isInteger(p.weeklyLimit) && p.weeklyLimit >= 1 && p.weeklyLimit <= 7 ? p.weeklyLimit : d.weeklyLimit,
+    weekdayStart: Math.max(hour(p.weekdayStart, law.weekdayStart), law.weekdayStart),
+    weekdayEnd: Math.min(hour(p.weekdayEnd, law.weekdayEnd), law.weekdayEnd),
+    saturdayStart: Math.max(hour(p.saturdayStart, law.saturdayStart), law.saturdayStart),
+    saturdayEnd: Math.min(hour(p.saturdayEnd, law.saturdayEnd), law.saturdayEnd),
+    weeklyLimit: law.weeklyLimit,
   };
-  if (resolved.weekdayEnd <= resolved.weekdayStart) Object.assign(resolved, { weekdayStart: d.weekdayStart, weekdayEnd: d.weekdayEnd });
-  if (resolved.saturdayEnd < resolved.saturdayStart) Object.assign(resolved, { saturdayStart: d.saturdayStart, saturdayEnd: d.saturdayEnd });
+  if (resolved.weekdayEnd <= resolved.weekdayStart) Object.assign(resolved, { weekdayStart: law.weekdayStart, weekdayEnd: law.weekdayEnd });
+  if (resolved.saturdayEnd < resolved.saturdayStart) Object.assign(resolved, { saturdayStart: law.saturdayStart, saturdayEnd: law.saturdayEnd });
   return resolved;
 };
 
 /** Checks a policy sent by the panel; throws a message for the first wrong field. */
 export const validateContactPolicy = (input = {}, current = {}) => {
+  const law = LEGAL_CONTACT_POLICY;
   const out = {};
-  for (const key of ['weekdayStart', 'weekdayEnd', 'saturdayStart', 'saturdayEnd']) {
-    if (input[key] === undefined) continue;
-    const value = Number(input[key]);
-    if (!Number.isInteger(value) || value < 0 || value > 24) throw new Error('Las horas van de 0 a 24.');
-    out[key] = value;
+  for (const [field, min, max, days] of [
+    ['weekdayStart', law.weekdayStart, law.weekdayEnd, 'de lunes a viernes'],
+    ['weekdayEnd', law.weekdayStart, law.weekdayEnd, 'de lunes a viernes'],
+    ['saturdayStart', law.saturdayStart, law.saturdayEnd, 'los sábados'],
+    ['saturdayEnd', law.saturdayStart, law.saturdayEnd, 'los sábados'],
+  ]) {
+    if (input[field] === undefined) continue;
+    const value = Number(input[field]);
+    if (!Number.isInteger(value) || value < min || value > max) throw new Error(`La Ley 2300 de 2023 solo permite escribir entre las ${min}:00 y las ${max}:00 ${days}.`);
+    out[field] = value;
   }
-  for (const key of ['allowSundays', 'allowHolidays']) {
-    if (input[key] !== undefined) out[key] = input[key] === true || input[key] === 'true';
+  if (['allowSundays', 'allowHolidays'].some((field) => input[field] === true || input[field] === 'true')) {
+    throw new Error('La Ley 2300 de 2023 no permite escribir los domingos ni los festivos.');
   }
-  if (input.weeklyLimit !== undefined) {
-    const value = Number(input.weeklyLimit);
-    if (!Number.isInteger(value) || value < 1 || value > 7) throw new Error('El límite semanal va de 1 a 7 mensajes.');
-    out.weeklyLimit = value;
+  if (input.weeklyLimit !== undefined && Number(input.weeklyLimit) !== law.weeklyLimit) {
+    throw new Error('La Ley 2300 de 2023 permite un solo mensaje de cobranza por semana.');
   }
   const merged = { ...resolveContactPolicy(current), ...out };
   if (merged.weekdayEnd <= merged.weekdayStart) throw new Error('El horario de lunes a viernes debe terminar después de empezar.');
@@ -115,8 +115,7 @@ const isHolidayParts = ({ y, m, d }) => colombianHolidays(y).has(key(y, m, d));
 
 /** Allowed [start, end) hours of a Bogotá day, or null when no contact is allowed that day. */
 const hoursOfDay = (parts, policy) => {
-  if (!policy.allowHolidays && isHolidayParts(parts)) return null;
-  if (parts.weekday === 0) return policy.allowSundays ? [policy.saturdayStart, policy.saturdayEnd] : null;
+  if (isHolidayParts(parts) || parts.weekday === 0) return null;
   if (parts.weekday === 6) return policy.saturdayEnd > policy.saturdayStart ? [policy.saturdayStart, policy.saturdayEnd] : null;
   return [policy.weekdayStart, policy.weekdayEnd];
 };

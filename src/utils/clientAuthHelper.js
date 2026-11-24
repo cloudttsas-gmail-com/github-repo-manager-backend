@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
 import { sendEmail } from './notifications.js';
+import { agencyName, inProject } from './agency.js';
 import { sendCompanyNotice, propertyName } from '../services/whatsappTemplates.service.js';
 
 // «el lote 12 de la manzana B» from the buyer's latest contract in the project
@@ -31,7 +32,9 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
     }
 
     const company = await Company.findById(companyId);
-    const companyName = company?.name || 'Inmobiliaria';
+    const agency = await agencyName(company, 'Inmobiliaria');
+    const inside = inProject(company, agency);
+    const project = inside ? ` ${inside}` : '';
     const companySlug = company?.slug || companyId.toString();
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002';
     
@@ -152,12 +155,12 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
 
     // Email Notification
     if (client.email) {
-      const subject = `Bienvenido a tu Portal de Cliente - ${companyName}`;
+      const subject = `Te damos la bienvenida${project} - ${agency}`;
       const emailHtml = `
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
-          <h2 style="color: #0284c7; text-align: center;">¡Bienvenido a ${companyName}!</h2>
+          <h2 style="color: #0284c7; text-align: center;">¡Te damos la bienvenida al comienzo de tus sueños${project}!</h2>
           <p>Hola <strong>${client.name}</strong>,</p>
-          <p>Tu cuenta de cliente ha sido registrada exitosamente en nuestro sistema de recaudo y cobranza inmobiliaria.</p>
+          <p>En <strong>${agency}</strong> nos alegra acompañarte en esta nueva etapa. Ya puedes entrar a tu portal para ver tu plan de pagos, tus recibos y tu estado de cuenta.</p>
           
           <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; margin: 20px 0;">
             <h4 style="margin: 0 0 10px 0; color: #0f172a;">Tus Datos de Acceso al Portal:</h4>
@@ -195,7 +198,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
         company,
         to: client.phone,
         notice: 'bienvenida',
-        values: { clientName: client.name, companyName, property: await buyerProperty(client, companyId, company), slug: companySlug },
+        values: { clientName: client.name, property: await buyerProperty(client, companyId, company), slug: companySlug },
       });
     }
 
@@ -213,7 +216,7 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
   
   try {
     const company = await Company.findById(companyId);
-    const companyName = company?.name || 'Inmobiliaria';
+    const agency = await agencyName(company, 'Inmobiliaria');
     
     const sortedQuotas = [...quotas].sort((a, b) => {
       if (a.number === 0) return -1;
@@ -247,14 +250,14 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
     }
     const lotLabel = lotNumber ? ` - Lote ${lotNumber}` : '';
     const subject = updateReason
-      ? `Tu plan de pagos se actualizó${lotLabel} - ${companyName}`
-      : `Tu Plan de Pagos${lotLabel} - ${companyName}`;
+      ? `Tu plan de pagos se actualizó${lotLabel} - ${agency}`
+      : `Tu Plan de Pagos${lotLabel} - ${agency}`;
     const intro = updateReason
       ? `Tu plan de pagos se actualizó: ${updateReason}. Este es el plan vigente; reemplaza al que recibiste antes:`
       : 'A continuación adjuntamos el detalle de tu plan de pagos acordado para la compra de tu inmueble:';
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
-        <h2 style="color: #0284c7; text-align: center;">Tu Plan de Pagos - ${companyName}</h2>
+        <h2 style="color: #0284c7; text-align: center;">Tu Plan de Pagos - ${agency}</h2>
         <p>Hola <strong>${client.name}</strong>,</p>
         <p>${intro}</p>
         
@@ -298,7 +301,7 @@ export const resendWelcomeNotification = async (client, tenantId, companyId) => 
     await client.save();
 
     const company = await Company.findById(companyId);
-    const companyName = company?.name || 'Inmobiliaria';
+    const agency = await agencyName(company, 'Inmobiliaria');
     const companySlug = company?.slug || companyId.toString();
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002';
     
@@ -307,10 +310,10 @@ export const resendWelcomeNotification = async (client, tenantId, companyId) => 
 
     // Email Notification
     if (client.email) {
-      const subject = `Verificación de Datos y Acceso al Portal - ${companyName}`;
+      const subject = `Verificación de Datos y Acceso al Portal - ${agency}`;
       const emailHtml = `
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
-          <h2 style="color: #0284c7; text-align: center;">¡Acceso a tu Portal - ${companyName}!</h2>
+          <h2 style="color: #0284c7; text-align: center;">¡Acceso a tu Portal - ${agency}!</h2>
           <p>Hola <strong>${client.name}</strong>,</p>
           <p>Este es un recordatorio para validar tus datos de contacto y acceder a tu portal de cliente.</p>
           
@@ -351,7 +354,7 @@ export const resendWelcomeNotification = async (client, tenantId, companyId) => 
         company,
         to: client.phone,
         notice: 'validar_datos',
-        values: { clientName: client.name, companyName, property: await buyerProperty(client, companyId, company), validationUrl },
+        values: { clientName: client.name, property: await buyerProperty(client, companyId, company), validationUrl },
       });
     }
   } catch (error) {

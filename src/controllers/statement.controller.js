@@ -8,6 +8,7 @@ import VerificationToken from '../models/VerificationToken.js';
 import AppError from '../utils/AppError.js';
 import { isValidPublicLink } from '../utils/publicLinks.js';
 import { sendEmail } from '../utils/notifications.js';
+import { agencyName, inProject } from '../utils/agency.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { sendStatementWorkbook } from '../utils/statementExcel.js';
@@ -54,7 +55,7 @@ const recordDelivery = async ({ loaded, channel, source, status = 'done', destin
  */
 const deliverStatement = async ({ loaded, channel, source, req }) => {
   const { client, company, summary } = loaded;
-  const companyName = company?.name || 'tu inmobiliaria';
+  const agency = await agencyName(company, 'tu inmobiliaria');
 
   let destination;
   let result;
@@ -69,7 +70,6 @@ const deliverStatement = async ({ loaded, channel, source, req }) => {
       values: {
         clientName: client.name,
         property: propertyName(loaded.contract.lot, company?.propertyType),
-        companyName,
         date: shortDate(new Date()),
         paid: money(summary.totalPaid),
         balance: money(summary.balance),
@@ -80,7 +80,7 @@ const deliverStatement = async ({ loaded, channel, source, req }) => {
   } else if (channel === 'email') {
     destination = client?.email;
     if (!destination) throw new AppError('El cliente no tiene un correo registrado', 400);
-    const { subject, html } = statementEmail({ client, companyName, summary });
+    const { subject, html } = statementEmail({ client, agency, project: inProject(company, agency), summary });
     result = await sendEmail(destination, subject, html);
   } else {
     throw new AppError('Canal no válido. Usa whatsapp o email.', 400);

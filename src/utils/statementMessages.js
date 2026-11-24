@@ -32,7 +32,7 @@ const overdueLine = (summary) => {
   return `${quotas} en mora por ${money(summary.overdueAmount)} (${days} de atraso)`;
 };
 
-export const statementEmail = ({ client, companyName, summary }) => {
+export const statementEmail = ({ client, agency, project, summary }) => {
   const overdue = overdueLine(summary);
   const row = (label, value, color = '#333') => `
           <tr>
@@ -44,7 +44,7 @@ export const statementEmail = ({ client, companyName, summary }) => {
     <div style="font-family: Arial, sans-serif; color: #333; max-width: 560px; margin: 0 auto; border: 1px solid #eee; padding: 24px; border-radius: 8px;">
       <h2 style="color: #2c3e50; margin-top: 0;">Estado de cuenta</h2>
       <p>Hola ${escapeHtml(firstName(client))},</p>
-      <p>Este es el estado de cuenta de tu inmueble con ${escapeHtml(companyName)}${summary.lotLabel !== 'N/A' ? ` (${escapeHtml(summary.lotLabel)})` : ''}.</p>
+      <p>Este es el estado de cuenta de tu inmueble${project ? ` ${escapeHtml(project)}` : ''} con ${escapeHtml(agency)}${summary.lotLabel !== 'N/A' ? ` (${escapeHtml(summary.lotLabel)})` : ''}.</p>
       <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin: 16px 0;">
         ${row('Valor total', money(summary.totalValue))}
         ${row('Pagado', money(summary.totalPaid), '#2e7d32')}
@@ -61,5 +61,5 @@ export const statementEmail = ({ client, companyName, summary }) => {
   `;
 
   const lotPart = summary?.lotNumber ? ` - Lote ${summary.lotNumber}` : '';
-  return { subject: `Tu estado de cuenta${lotPart} - ${companyName}`, html };
+  return { subject: `Tu estado de cuenta${lotPart} - ${agency}`, html };
 };

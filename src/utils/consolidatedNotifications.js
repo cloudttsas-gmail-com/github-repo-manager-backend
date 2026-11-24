@@ -2,6 +2,7 @@ import Quota from '../models/Quota.js';
 import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
 import { sendEmail } from './notifications.js';
+import { agencyName, inProject } from './agency.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { publicLinkUrl, signReceiptUrl } from './publicLinks.js';
 
@@ -31,7 +32,8 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
 
     const client = contract.client;
     const company = await Company.findById(companyId);
-    const companyName = company?.name || 'Inmobiliaria';
+    const agency = await agencyName(company, 'Inmobiliaria');
+    const inside = inProject(company, agency);
 
     const apiUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}`;
     const statementUrl = publicLinkUrl('statement', contract._id, apiUrl);
@@ -57,7 +59,6 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
         notice: 'pago_recibido',
         values: {
           clientName: client.name,
-          companyName,
           amount: money(attempt?.amount || totalAmount),
           date: shortDate(attempt?.fechaPago || firstQuota.paymentDate || new Date()),
           property: propertyName(contract.lot, company?.propertyType),
@@ -70,7 +71,7 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
 
     // Send Consolidated Email
     if (client.email) {
-      const subject = `Comprobante de Pago Consolidado - ${companyName}`;
+      const subject = `Comprobante de Pago Consolidado - ${agency}`;
       const quotaRowsHtml = quotas.map(q => `
         <tr style="border-bottom: 1px solid #e2e8f0;">
           <td style="padding: 10px; font-weight: bold;">Cuota #${q.number} (${q.type === 'inicial' ? 'inicial' : 'ordinaria'})</td>
@@ -83,7 +84,7 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 25px; border-radius: 10px;">
           <h2 style="color: #22c55e; text-align: center;">¡Pago Recibido Exitosamente!</h2>
           <p>Hola <strong>${client.name}</strong>,</p>
-          <p>Hemos procesado y aprobado un pago para tu inmueble en <strong>${companyName}</strong>. A continuación, te presentamos el resumen consolidado de las cuotas cubiertas por este pago:</p>
+          <p>En <strong>${agency}</strong> aprobamos un pago para tu inmueble${inside ? ` ${inside}` : ''}. Este es el resumen de las cuotas que cubre:</p>
           
           <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px;">
             <thead>
@@ -113,7 +114,7 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
 
           <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 15px; margin-top: 25px;">
             Gracias por tu cumplimiento.<br>
-            <strong>${companyName}</strong>
+            <strong>${agency}</strong>
           </p>
         </div>
       `;

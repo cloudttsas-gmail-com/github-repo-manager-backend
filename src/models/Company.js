@@ -97,15 +97,12 @@ const companySchema = new mongoose.Schema({
     allowInitialModeOverride: Boolean,
     maxOrdinaryQuotas: Number,
   },
-  // When and how often buyers may be contacted (Ley 2300); missing fields use DEFAULT_CONTACT_POLICY
+  // When and how often buyers may be contacted, within the limits of Ley 2300 (LEGAL_CONTACT_POLICY); a project can only narrow them
   contactPolicy: {
     weekdayStart: Number,
     weekdayEnd: Number,
     saturdayStart: Number,
     saturdayEnd: Number,
-    allowSundays: Boolean,
-    allowHolidays: Boolean,
-    weeklyLimit: Number,
   },
 }, {
   timestamps: true,

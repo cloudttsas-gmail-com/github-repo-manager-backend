@@ -3,6 +3,7 @@ import Campaign from '../models/Campaign.js';
 import CampaignRecipient from '../models/CampaignRecipient.js';
 import Company from '../models/Company.js';
 import { whatsappService } from './whatsapp.service.js';
+import { agencyName } from '../utils/agency.js';
 import { companyWhatsAppAccount } from './whatsappTemplates.service.js';
 import { campaignTemplates, lastPayments, recipientValues, sendComponents } from './campaignTemplates.service.js';
 import { buildAudience } from './campaignAudience.service.js';
@@ -59,6 +60,7 @@ export const sendCampaignBatches = async (campaign, now = () => new Date()) => {
   const account = companyWhatsAppAccount(company);
   if (!account) return failQueued(campaign, 'El proyecto no tiene un número de WhatsApp conectado');
   const policy = resolveContactPolicy(company.contactPolicy);
+  const agency = await agencyName(company);
 
   let template;
   try {
@@ -118,7 +120,7 @@ export const sendCampaignBatches = async (campaign, now = () => new Date()) => {
       }
       try {
         const ctx = { contract: row.contract, lastPayment: payments.get(id), apiUrl: process.env.API_URL || '' };
-        const values = { ...recipientValues({ company, client: row.client, ...ctx, summary: row.summary }), ...(campaign.values || {}) };
+        const values = { ...recipientValues({ company, agency, client: row.client, ...ctx, summary: row.summary }), ...(campaign.values || {}) };
         const data = await whatsappService.sendTemplateMessage(account, row.phone, template.name, template.language, sendComponents(template, values, ctx));
         await CampaignRecipient.updateOne({ _id: recipient._id }, {
           status: 'sent', sentAt: new Date(), waMessageId: data?.messages?.[0]?.id, contractId: row.contract._id, phone: row.phone,
