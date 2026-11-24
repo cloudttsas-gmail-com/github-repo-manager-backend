@@ -9,7 +9,7 @@ import Quota from '../src/models/Quota.js';
 import { whatsappService } from '../src/services/whatsapp.service.js';
 import {
   DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
-  buildCompanyTemplate, templateFieldsFor, prepareHeaderSample, projectSamples,
+  buildCompanyTemplate, buildTemplateEdit, templateFieldsFor, prepareHeaderSample, projectSamples,
 } from '../src/services/whatsappTemplates.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
@@ -210,6 +210,39 @@ describe('A company template only carries Operix data as named variables', () =>
     [{ name: 'Con Espacios', body: 'Su cuota vence pronto.' }, /minúsculas/],
   ])('rejects what Meta would reject: %j', (input, message) => {
     expect(() => buildCompanyTemplate(company, input)).toThrow(message);
+  });
+});
+
+describe('Editing a template sends it back to review without breaking what fills it', () => {
+  const own = (extra = {}) => ({ id: '1', name: 'recordatorio_demo', language: 'es', status: 'APPROVED', category: 'UTILITY', components: [], ...extra });
+  const notice = (extra = {}) => own({ name: 'operix_bienvenida', ...extra });
+
+  it('an approved template keeps its category; a rejected one may change it; its buttons stay', async () => {
+    const buttons = { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Ya pagué' }] };
+    const input = { name: 'otro_nombre', category: 'MARKETING', body: 'Hola {{nombre_comprador}}, su cuota vence pronto.' };
+    const approved = await buildTemplateEdit(connected, own({ components: [buttons] }), input);
+    expect(approved.category).toBeUndefined();
+    expect(approved.name).toBeUndefined();
+    expect(approved.parameter_format).toBe('NAMED');
+    expect(approved.components.at(-1)).toEqual(buttons);
+    expect((await buildTemplateEdit(connected, own({ status: 'REJECTED' }), input)).category).toBe('MARKETING');
+  });
+
+  it('a notice of Operix only changes its text and must keep its data', async () => {
+    const body = 'Hola {{1}}, {{2}} ya registró a su nombre la compra de {{3}} en el proyecto.';
+    const edit = await buildTemplateEdit(connected, notice(), { body });
+    const original = DEFAULT_TEMPLATES.operix_bienvenida.components({ companyName: connected.name, companyPhone: connected.phone });
+    expect(edit.components.find((c) => c.type === 'BODY')).toEqual({ ...original.find((c) => c.type === 'BODY'), text: body });
+    expect(edit.components.filter((c) => c.type !== 'BODY')).toEqual(original.filter((c) => c.type !== 'BODY'));
+    await expect(buildTemplateEdit(connected, notice(), { body: 'Hola {{1}}, {{2}} registró su compra hoy.' })).rejects.toThrow(/conservar/);
+    await expect(buildTemplateEdit(connected, notice(), { body: 'Hola {{1}}, {{1}} y {{2}} registró {{3}} hoy.' })).rejects.toThrow(/conservar/);
+    await expect(buildTemplateEdit(connected, notice(), { body: '{{1}}, {{2}} registró {{3}} hoy.' })).rejects.toThrow(/empiece/);
+  });
+
+  it('one in review, the code template and one with parts outside the form are not edited', async () => {
+    await expect(buildTemplateEdit(connected, own({ components: [{ type: 'CAROUSEL', cards: [] }] }), { body: 'Su cuota vence pronto.' })).rejects.toThrow(/no edita/);
+    await expect(buildTemplateEdit(connected, own({ status: 'PENDING' }), { body: 'Hola.' })).rejects.toThrow(/revisando/);
+    await expect(buildTemplateEdit(connected, own({ name: 'operix_codigo', category: 'AUTHENTICATION' }), { body: 'Hola.' })).rejects.toThrow(/fijo/);
   });
 });
 

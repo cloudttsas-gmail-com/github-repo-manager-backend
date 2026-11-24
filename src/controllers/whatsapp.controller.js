@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { whatsappService } from '../services/whatsapp.service.js';
 import CampaignRecipient from '../models/CampaignRecipient.js';
 import {
-  companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, templateFieldsFor,
+  companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, buildTemplateEdit, templateFieldsFor,
   prepareHeaderSample, DOCUMENT_SOURCES, projectSamples,
 } from '../services/whatsappTemplates.service.js';
 import Conversation from '../models/Conversation.js';
@@ -10,6 +10,7 @@ import Message from '../models/Message.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import TemplateMedia from '../models/TemplateMedia.js';
+import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AppError from '../utils/AppError.js';
 import { GRAPH_API_URL, GRAPH_API_VERSION } from '../config/meta.js';
@@ -417,16 +418,45 @@ export const getConfig = async (req, res, next) => {
 
 export const getTemplates = async (req, res, next) => {
   try {
-    const waConfig = await accountOf(req);
+    const company = await activeCompany(req);
+    const waConfig = companyWhatsAppAccount(company);
     if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const templates = await whatsappService.getTemplates(waConfig);
     // Senders get the approved ones; the templates page asks for all with their status
-    const data = req.query.all === 'true' ? templates : templates.filter((t) => t.status === 'APPROVED');
+    let data = templates.filter((t) => t.status === 'APPROVED');
+    if (req.query.all === 'true') {
+      // What each media header attaches, so the edit form starts from it
+      const media = await TemplateMedia.find({ companyId: company._id }).lean();
+      data = templates.map((t) => {
+        const own = media.find((m) => m.name === t.name && m.language === t.language);
+        return own ? { ...t, headerMedia: { source: own.source, fileUrl: own.fileUrl, fileName: own.fileName } } : t;
+      });
+    }
     res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
 };
+/** The template's media header, or null when it has none or it is text */
+const mediaHeaderOf = ({ components }) => (components || []).find((c) => c.type === 'HEADER' && c.format && c.format !== 'TEXT') || null;
+
+/** Meta keeps only the sample of a media header: Operix keeps what to attach when sending */
+const saveTemplateMedia = async (company, template, media) => {
+  const header = mediaHeaderOf(template);
+  if (!header || !media?.source) return;
+  await TemplateMedia.findOneAndUpdate(
+    { companyId: company._id, name: template.name, language: template.language },
+    {
+      tenantId: company.tenantId, format: header.format,
+      source: media.source,
+      // Only a file Operix stored itself (header-sample), never an outside link
+      fileUrl: media.source === 'file' && String(media.fileUrl || '').startsWith(`${process.env.R2_PUBLIC_URL}/whatsapp-templates/`) ? media.fileUrl : undefined,
+      fileName: String(media.fileName || '').slice(0, 120),
+    },
+    { upsert: true, runValidators: true },
+  );
+};
+
 /**
  * Create a new template
  */
@@ -438,20 +468,40 @@ export const createTemplate = async (req, res, next) => {
     // Built here from the form fields, so only Operix data reaches Meta as variables
     const template = buildCompanyTemplate(company, req.body, templateFieldsFor(company, await projectSamples(company)));
     const result = await whatsappService.createTemplate(waConfig, template);
-    // Meta keeps only the sample of a media header: Operix keeps what to attach when sending
-    const media = req.body.headerMedia;
-    if (template.components[0]?.format && template.components[0].format !== 'TEXT' && media?.source) {
-      await TemplateMedia.findOneAndUpdate(
-        { companyId: company._id, name: template.name, language: template.language },
-        {
-          tenantId: company.tenantId, format: template.components[0].format,
-          source: media.source,
-          // Only a file Operix stored itself (header-sample), never an outside link
-          fileUrl: media.source === 'file' && String(media.fileUrl || '').startsWith(`${process.env.R2_PUBLIC_URL}/whatsapp-templates/`) ? media.fileUrl : undefined,
-          fileName: String(media.fileName || '').slice(0, 120),
-        },
-        { upsert: true, runValidators: true },
-      );
+    await saveTemplateMedia(company, template, req.body.headerMedia);
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Edit a template of the project's account; Meta reviews it again
+ */
+export const editTemplate = async (req, res, next) => {
+  try {
+    const company = await activeCompany(req);
+    const waConfig = companyWhatsAppAccount(company);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
+    // Looked up in the project's own account: an id of another one is never edited
+    const current = (await whatsappService.getTemplates(waConfig)).find((t) => String(t.id) === req.params.id);
+    if (!current) return next(new AppError('Esta plantilla no existe en la cuenta del proyecto.', 404));
+    // The automatic notices are configuration, as creating them is
+    if (current.name.startsWith('operix_') && !hasPermission(req.user.role, PERMISSIONS.CONFIG_TENANT)) {
+      return next(new AppError('Solo la administración puede editar las plantillas de los avisos.', 403));
+    }
+    const payload = await buildTemplateEdit(company, current, req.body, templateFieldsFor(company, await projectSamples(company)));
+    const result = await whatsappService.editTemplate(waConfig, current.id, payload);
+
+    if (!current.name.startsWith('operix_')) {
+      const edited = { name: current.name, language: current.language, components: payload.components };
+      const key = { companyId: company._id, name: current.name, language: current.language };
+      const before = await TemplateMedia.findOne(key);
+      if (mediaHeaderOf(edited)) await saveTemplateMedia(company, edited, req.body.headerMedia);
+      else await TemplateMedia.deleteOne(key);
+      // The previous file goes only when nothing uses it any more
+      const after = await TemplateMedia.findOne(key);
+      if (before?.fileUrl && before.fileUrl !== after?.fileUrl) await deleteFromR2(before.fileUrl).catch(() => null);
     }
     res.status(200).json({ success: true, data: result });
   } catch (error) {

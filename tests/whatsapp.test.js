@@ -117,6 +117,35 @@ describe('Integration Test - WhatsApp manual send', () => {
     }
   });
 
+  it('edits only templates of the project account, and the notices only with configuration permission', async () => {
+    await Company.updateOne({ _id: companyId }, { $set: {
+      'integrations.whatsappConnectedAt': new Date(), 'integrations.whatsappAccessToken': 't', 'integrations.whatsappPhoneId': 'p', 'integrations.whatsappWabaId': 'w',
+    } });
+    const account = await UserAccount.findOne({ email });
+    const admin = await User.findOne({ accountId: account._id });
+    const seller = generateAccessToken({ accountId: account._id, userId: admin._id, tenantId: admin.tenantId, companyId, role: 'auxiliar_cartera' });
+    const listSpy = jest.spyOn(whatsappService, 'getTemplates').mockResolvedValue([
+      { id: '10', name: 'recordatorio', language: 'es', status: 'APPROVED', category: 'UTILITY', components: [] },
+      { id: '11', name: 'operix_bienvenida', language: 'es', status: 'APPROVED', category: 'UTILITY', components: [] },
+    ]);
+    const editSpy = jest.spyOn(whatsappService, 'editTemplate').mockResolvedValue({ success: true });
+    const put = (id, as, body) => request(app).put(`/api/whatsapp/templates/${id}?companyId=${companyId}`).set('Authorization', `Bearer ${as}`).send({ body });
+    try {
+      expect((await put('99', token, 'Su cuota vence pronto.')).statusCode).toBe(404);
+      expect(editSpy).not.toHaveBeenCalled();
+      expect((await put('10', token, 'Su cuota vence pronto.')).statusCode).toBe(200);
+      expect(editSpy).toHaveBeenCalledWith(expect.anything(), '10', { components: [{ type: 'BODY', text: 'Su cuota vence pronto.' }] });
+      const text = 'Hola {{1}}, {{2}} registró {{3}} a su nombre.';
+      expect((await put('11', seller, text)).statusCode).toBe(403);
+      expect((await put('11', token, text)).statusCode).toBe(200);
+      expect(editSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      listSpy.mockRestore();
+      editSpy.mockRestore();
+      await Company.updateOne({ _id: companyId }, { $unset: { 'integrations.whatsappConnectedAt': 1, 'integrations.whatsappAccessToken': 1, 'integrations.whatsappPhoneId': 1, 'integrations.whatsappWabaId': 1 } });
+    }
+  });
+
   it('sends a template in the requested language, Spanish by default', async () => {
     await Company.updateOne({ _id: companyId }, {
       'integrations.whatsappConnectedAt': new Date(), 'integrations.whatsappAccessToken': 'token-lang',

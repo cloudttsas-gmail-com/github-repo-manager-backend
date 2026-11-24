@@ -520,3 +520,49 @@ export const buildCompanyTemplate = (company, input = {}, fields = templateField
 
   return { name, category, language, ...(keys.length ? { parameter_format: 'NAMED' } : {}), components };
 };
+
+// Meta only edits templates in these states; one in review waits for its answer
+const EDITABLE_STATUSES = ['APPROVED', 'REJECTED', 'PAUSED'];
+
+/**
+ * Meta's edit payload for a template of the project's account. Name and language never change,
+ * nor the category of an approved one. The notices Operix sends (`operix_*`) only change their
+ * text: the send side fills their data by position, so the same data must stay.
+ */
+export const buildTemplateEdit = async (company, current, input = {}, fields = templateFieldsFor(company)) => {
+  if (!EDITABLE_STATUSES.includes(current.status)) fail('Meta está revisando esta plantilla o la desactivó: todavía no se puede editar.');
+  if (current.category === 'AUTHENTICATION') fail('Las plantillas de código tienen un texto fijo de Meta y no se editan.');
+
+  if (current.name.startsWith('operix_')) {
+    const definition = DEFAULT_TEMPLATES[current.name];
+    if (!definition || current.language !== LANGUAGE) fail('Esta plantilla no es de los avisos de Operix.');
+    const text = String(input.body || '').trim();
+    if (!text) fail('Escribe el cuerpo del mensaje.');
+    if (text.length > BODY_MAX) fail(`El cuerpo admite hasta ${BODY_MAX} caracteres.`);
+    if (/^\{\{/.test(text)) fail('Meta no acepta un mensaje que empiece con un dato variable.');
+    if (/\}\}$/.test(text.replace(/[.!?¡¿\s]+$/, ''))) fail('Meta no acepta un mensaje que termine con un dato variable.');
+    const expected = templateVariables(definition.components({ companyName: company.name, companyPhone: company.phone, handle: 'x' }).find((c) => c.type === 'BODY').text);
+    const found = templateVariables(text);
+    if (found.join() !== expected.join()) fail(`El mensaje debe conservar, una vez cada uno, los datos ${expected.map((n) => `{{${n}}}`).join(', ')}.`);
+    const handle = definition.documentHeader ? await uploadSampleDocument(companyWhatsAppAccount(company).accessToken) : null;
+    const components = definition.components({ companyName: company.name, companyPhone: company.phone, handle })
+      .map((c) => (c.type === 'BODY' ? { ...c, text } : c));
+    return { components };
+  }
+
+  // A carousel, a location or anything the form does not show would be lost
+  if ((current.components || []).some((c) => !['HEADER', 'BODY', 'FOOTER', 'BUTTONS'].includes(c.type) || c.format === 'LOCATION')) {
+    fail('Esta plantilla tiene partes que Operix no edita. Edítala en el administrador de WhatsApp de Meta.');
+  }
+  const template = buildCompanyTemplate(company, { ...input, name: current.name, language: current.language }, fields);
+  // Buttons are not in the form: the ones it has stay
+  const buttons = (current.components || []).filter((c) => c.type === 'BUTTONS');
+  return {
+    ...(current.status === 'APPROVED' ? {} : { category: template.category }),
+    ...(template.parameter_format ? { parameter_format: template.parameter_format } : {}),
+    components: [...template.components, ...buttons],
+  };
+};
+
+// Every {{n}} of a text, in numeric order and with repeats
+const templateVariables = (text) => [...text.matchAll(VARIABLE)].map((m) => m[1]).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
