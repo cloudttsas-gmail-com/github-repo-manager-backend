@@ -22,6 +22,15 @@ import { applyPaymentToQuotas, isAppliedToQuotas, revertAppliedPayment } from '.
 import { parsePositiveAmount } from '../utils/math.js';
 import { escapeRegex } from '../utils/regex.js';
 
+const SELLER_ROLES = ['vendedor', 'ejecutivo_comercial', 'agent'];
+
+// A seller only sees the payments of their own sales: the listing and the Siigo export
+const sellerContractFilter = async ({ tenantId, companyId, role, userId }) => {
+  if (!SELLER_ROLES.includes(role)) return null;
+  const sellerContracts = await Contract.find({ tenantId, companyId, sellerId: userId }).select('_id');
+  return { $in: sellerContracts.map((c) => c._id) };
+};
+
 /**
  * Get all quotas (payments) for a given company with server-side pagination and filtering.
  * Uses the Quota model since each quota represents a payment record.
@@ -61,10 +70,8 @@ export const getPayments = async (req, res, next) => {
     };
 
     // If seller/executive role, restrict to their own sales' attempts
-    if (role === 'vendedor' || role === 'ejecutivo_comercial' || role === 'agent') {
-      const sellerContracts = await Contract.find({ tenantId, companyId, sellerId: userId }).select('_id');
-      query.contractId = { $in: sellerContracts.map((c) => c._id) };
-    }
+    const sellerContracts = await sellerContractFilter({ tenantId, companyId, role, userId });
+    if (sellerContracts) query.contractId = sellerContracts;
 
     const scope = { ...query };
 
@@ -139,6 +146,7 @@ export const getPayments = async (req, res, next) => {
         status: qObj.status === 'APROBADO' ? 'PAGADO' : (qObj.status === 'RECHAZADO' ? 'RECHAZADO' : 'PENDIENTE'),
         observacion: qObj.status === 'RECHAZADO' ? (qObj.rejectedReason || '') : '',
         observations: qObj.observations || '',
+        approvalNotes: qObj.approvalNotes || '',
         rejectedReason: qObj.rejectedReason || '',
         type: firstQuota?.type || 'normal',
         contract: {
@@ -293,7 +301,8 @@ export const approvePayment = async (req, res, next) => {
     // Claim the payment atomically before touching any quota
     const claimed = await PaymentAttempt.findOneAndUpdate(
       { _id: attempt._id, tenantId, companyId, status: 'PENDIENTE' },
-      { $set: { status: 'APROBADO', approvedBy: userId, approvedAt: new Date(), ...(observacion ? { observations: observacion } : {}) } },
+      // The approver's note goes apart: the buyer's observations stay as they reported them
+      { $set: { status: 'APROBADO', approvedBy: userId, approvedAt: new Date(), ...(observacion?.trim() ? { approvalNotes: observacion.trim() } : {}) } },
       { new: true },
     );
     if (!claimed) {
@@ -356,8 +365,8 @@ export const approvePayment = async (req, res, next) => {
       await PaymentAttempt.collection.updateOne(
         { _id: attempt._id },
         {
-          $set: { status: 'PENDIENTE', quotas: original.quotas, observations: original.observations },
-          $unset: { approvedBy: 1, approvedAt: 1 },
+          $set: { status: 'PENDIENTE', quotas: original.quotas },
+          $unset: { approvedBy: 1, approvedAt: 1, approvalNotes: 1 },
         },
       );
       throw applyError;
@@ -394,6 +403,7 @@ export const approvePayment = async (req, res, next) => {
       message: unapplied > 0
         ? `Pago aprobado. $${unapplied.toLocaleString('es-CO')} superan el saldo del contrato y quedaron sin aplicar a ninguna cuota.`
         : 'Intento de pago aprobado y cuotas actualizadas exitosamente',
+      data: { unappliedAmount: unapplied },
     });
   } catch (error) {
     console.error('[LOG][APPROVE_PAYMENT] Error crítico en aprobación:', error);
@@ -536,6 +546,17 @@ export const registerManualPayment = async (req, res, next) => {
     const paidAmount = parsePositiveAmount(amount);
     if (paidAmount === null) {
       return next(new AppError('El monto del pago debe ser un número mayor a 0', 400));
+    }
+    // A manual payment never goes beyond what the contract still owes: the cascade
+    // would leave the rest applied to no quota
+    const contractQuotas = await Quota.find({ contract: quota.contract, tenantId, companyId, status: { $in: ['pendiente', 'mora'] } }).select('value amountPaid');
+    const owed = [quota, ...contractQuotas.filter((q) => !q._id.equals(quota._id))]
+      .reduce((sum, q) => sum + Math.max(0, q.value - (q.amountPaid || 0)), 0);
+    if (owed <= 0) {
+      return next(new AppError('Este contrato no tiene saldo pendiente', 400));
+    }
+    if (paidAmount > owed) {
+      return next(new AppError(`El pago supera lo pendiente del contrato ($${owed.toLocaleString('es-CO')}). Registra como máximo ese valor.`, 400));
     }
     const fallbackBank = isCash ? 'Efectivo' : 'Cruce de cuentas';
     const bankChoice = await resolveBankChoice(companyId, { bankAccountId, bank: bank || fallbackBank });
@@ -713,7 +734,7 @@ export const resendReceipt = async (req, res, next) => {
  */
 export const exportSiigoExcel = async (req, res, next) => {
   try {
-    const { tenantId, companyId } = req.user;
+    const { tenantId, companyId, role, userId } = req.user;
     const { 
       startDate, 
       endDate, 
@@ -728,6 +749,8 @@ export const exportSiigoExcel = async (req, res, next) => {
       companyId,
       status: 'APROBADO'
     };
+    const sellerContracts = await sellerContractFilter({ tenantId, companyId, role, userId });
+    if (sellerContracts) query.contractId = sellerContracts;
 
     // The range is in Bogotá days: a date-only value covers that whole day in Colombia
     const dayBound = (value, time) => (/^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T${time}-05:00`) : new Date(value));

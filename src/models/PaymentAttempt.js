@@ -81,6 +81,10 @@ const paymentAttemptSchema = new mongoose.Schema({
   observations: {
     type: String,
   },
+  // The note of whoever approved it; the buyer's observations are not overwritten
+  approvalNotes: {
+    type: String,
+  },
   status: {
     type: String,
     enum: ['PENDIENTE', 'APROBADO', 'RECHAZADO'],
