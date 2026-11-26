@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { whatsappService } from '../services/whatsapp.service.js';
 import CampaignRecipient from '../models/CampaignRecipient.js';
 import {
-  companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, buildTemplateEdit, templateFieldsFor,
+  companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, buildTemplateEdit, buildRestoreEdit, templateFieldsFor,
   prepareHeaderSample, DOCUMENT_SOURCES, projectSamples,
 } from '../services/whatsappTemplates.service.js';
 import Conversation from '../models/Conversation.js';
@@ -10,6 +10,7 @@ import Message from '../models/Message.js';
 import Client from '../models/Client.js';
 import Company from '../models/Company.js';
 import TemplateMedia from '../models/TemplateMedia.js';
+import { actorOf, ensureBaseline, findVersion, listVersions, recordVersion } from '../services/templateHistory.service.js';
 import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AppError from '../utils/AppError.js';
@@ -469,6 +470,7 @@ export const createTemplate = async (req, res, next) => {
     const template = buildCompanyTemplate(company, req.body, templateFieldsFor(company, await projectSamples(company)));
     const result = await whatsappService.createTemplate(waConfig, template);
     await saveTemplateMedia(company, template, req.body.headerMedia);
+    await recordVersion(company, { ...template, id: result?.id }, { action: 'created', actor: actorOf(req.user) });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
@@ -491,18 +493,87 @@ export const editTemplate = async (req, res, next) => {
       return next(new AppError('Solo la administración puede editar las plantillas de los avisos.', 403));
     }
     const payload = await buildTemplateEdit(company, current, req.body, templateFieldsFor(company, await projectSamples(company)));
+    // The version Meta has now stays in the history before it changes
+    await ensureBaseline(company, current);
     const result = await whatsappService.editTemplate(waConfig, current.id, payload);
 
     if (!current.name.startsWith('operix_')) {
       const edited = { name: current.name, language: current.language, components: payload.components };
       const key = { companyId: company._id, name: current.name, language: current.language };
-      const before = await TemplateMedia.findOne(key);
+      // The previous header file stays in storage: an earlier version may be restored with it
       if (mediaHeaderOf(edited)) await saveTemplateMedia(company, edited, req.body.headerMedia);
       else await TemplateMedia.deleteOne(key);
-      // The previous file goes only when nothing uses it any more
-      const after = await TemplateMedia.findOne(key);
-      if (before?.fileUrl && before.fileUrl !== after?.fileUrl) await deleteFromR2(before.fileUrl).catch(() => null);
     }
+    await recordVersion(company, { ...current, ...payload, category: payload.category || current.category }, { action: 'edited', actor: actorOf(req.user) });
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The template of the project's account with this Meta id, or null. */
+const templateInAccount = async (waConfig, id) => (await whatsappService.getTemplates(waConfig)).find((t) => String(t.id) === String(id)) || null;
+
+/**
+ * GET /api/whatsapp/templates/:id/history: the template as Meta has it now and every version
+ * Operix recorded (newest first), with who made each change and under which role.
+ */
+export const getTemplateHistory = async (req, res, next) => {
+  try {
+    const company = await activeCompany(req);
+    const waConfig = companyWhatsAppAccount(company);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
+    const current = await templateInAccount(waConfig, req.params.id);
+    if (!current) return next(new AppError('Esta plantilla no existe en la cuenta del proyecto.', 404));
+    await ensureBaseline(company, current);
+    const versions = await listVersions(company, current);
+    const created = versions.find((v) => v.action === 'created');
+    const changed = versions.find((v) => v.action !== 'found');
+    res.status(200).json({
+      success: true,
+      data: {
+        template: current,
+        versions,
+        createdAt: created?.createdAt || null,
+        createdBy: created?.by || null,
+        // Before Operix kept history: the first time it saw the template
+        firstSeenAt: versions.at(-1)?.createdAt || null,
+        lastChange: changed ? { at: changed.createdAt, by: changed.by, action: changed.action } : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/whatsapp/templates/:id/restore { versionId }: sends Meta an edit that brings the
+ * template back to that version; Meta reviews it again.
+ */
+export const restoreTemplateVersion = async (req, res, next) => {
+  try {
+    const company = await activeCompany(req);
+    const waConfig = companyWhatsAppAccount(company);
+    if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
+    const current = await templateInAccount(waConfig, req.params.id);
+    if (!current) return next(new AppError('Esta plantilla no existe en la cuenta del proyecto.', 404));
+    if (current.name.startsWith('operix_') && !hasPermission(req.user.role, PERMISSIONS.CONFIG_TENANT)) {
+      return next(new AppError('Solo la administración puede editar las plantillas de los avisos.', 403));
+    }
+    if (!mongoose.isValidObjectId(req.body?.versionId)) return next(new AppError('Elige la versión a la que quieres volver.', 400));
+    const version = await findVersion(company, current, req.body.versionId);
+    if (!version) return next(new AppError('Esa versión no es de esta plantilla.', 404));
+
+    const payload = await buildRestoreEdit(company, current, version);
+    await ensureBaseline(company, current);
+    const result = await whatsappService.editTemplate(waConfig, current.id, payload);
+    // What the header attaches goes back to that version too
+    if (!current.name.startsWith('operix_') && version.media?.source) {
+      await saveTemplateMedia(company, { ...current, components: payload.components }, version.media);
+    }
+    await recordVersion(company, { ...current, ...payload, category: payload.category || current.category }, {
+      action: 'restored', actor: actorOf(req.user), restoredFrom: version._id,
+    });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
@@ -566,7 +637,7 @@ export const createDefaultTemplates = async (req, res, next) => {
   try {
     const company = await activeCompany(req);
     if (!companyWhatsAppAccount(company)) return next(new AppError(NOT_CONNECTED, 400));
-    const results = await ensureDefaultTemplates(company);
+    const results = await ensureDefaultTemplates(company, { actor: actorOf(req.user) });
     res.status(200).json({ success: true, data: results });
   } catch (error) {
     next(error);

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
 import Company from '../models/Company.js';
+import { issuerOf } from '../utils/agency.js';
 import { publicLinkUrl } from '../utils/publicLinks.js';
 
 /**
@@ -114,7 +115,7 @@ const breakdownOf = (quotas) => ({
  * Pure calculation: the summary of a contract from its quotas.
  * `contract.lot` may be populated (for the label) or an id.
  */
-export const buildStatementSummary = (contract, quotas, { now = new Date(), apiUrl } = {}) => {
+export const buildStatementSummary = (contract, quotas, { now = new Date(), apiUrl, projectName } = {}) => {
   const sorted = [...quotas].sort(byTypeAndNumber);
   const quotasTotal = sorted.reduce((sum, q) => sum + (q.value || 0), 0);
   const totalValue = contract.totalValue || quotasTotal;
@@ -142,7 +143,9 @@ export const buildStatementSummary = (contract, quotas, { now = new Date(), apiU
     contractId,
     lotLabel: lotLabel(lot),
     lotNumber: lot?.lotNumber || '',
-    projectName: contract.negotiation || '',
+    // The project the property is in (not the contract's negotiation label)
+    projectName: projectName ?? (contract.companyId?.name || ''),
+    negotiation: contract.negotiation || '',
     totalValue,
     totalPaid,
     balance,
@@ -208,7 +211,7 @@ export const loadStatement = async (filter, { now, apiUrl } = {}) => {
     client: contract.client,
     company,
     quotas,
-    summary: buildStatementSummary(contract, quotas, { now, apiUrl }),
+    summary: buildStatementSummary(contract, quotas, { now, apiUrl, projectName: company?.name }),
   };
 };
 
@@ -237,45 +240,20 @@ export const getCompanyOverdueStats = async (tenantId, companyId, now = new Date
 };
 
 /**
- * The data the PDF generator expects, taken from the summary.
+ * The data the PDF generator expects, taken from the summary. The inmobiliaria issues the
+ * document (`issuer`); the project is where the property is.
  */
-export const toStatementPdfData = ({ contract, client, company, summary }) => ({
+export const toStatementPdfData = async ({ contract, client, company, summary }) => ({
   title: statementTitle(contract.lot, company),
   contractId: contract._id,
-  clientName: client?.name || 'N/A',
-  clientId: client?.idNumber || 'N/A',
-  clientPhone: client?.phone || '',
-  clientEmail: client?.email || '',
-  projectName: contract.negotiation || 'Proyecto sin nombre',
+  issuer: await issuerOf(company),
+  projectName: company?.name || '',
   lotInfo: summary.lotLabel,
-  companyName: company?.name || '',
-  companyNit: company?.nit || '',
-  companyAddress: company?.address || '',
-  companyPhone: company?.phone || '',
-  companyLogo: company?.projectLogo || company?.logo || '',
-  totalValue: summary.totalValue,
-  totalPaid: summary.totalPaid,
-  totalPending: summary.balance,
-  averageRecaudo: summary.percentPaid,
-  overdueCount: summary.overdueCount,
-  overdueAmount: summary.overdueAmount,
-  daysOverdue: summary.daysOverdue,
-  valorTotalInicial: summary.breakdown.initial.total,
-  valorPagadoInicial: summary.breakdown.initial.paid,
-  totalCuotasIniciales: summary.breakdown.initial.count,
-  cuotasInicialesPagadas: summary.breakdown.initial.paidCount,
-  valorTotalCuotas: summary.breakdown.normal.total,
-  valorPagadoCuotas: summary.breakdown.normal.paid,
-  totalCuotasNormales: summary.breakdown.normal.count,
-  cuotasNormalesPagadas: summary.breakdown.normal.paidCount,
-  quotas: summary.quotas.map((q) => ({
-    number: q.number,
-    type: q.type,
-    dueDate: q.dueDate,
-    value: q.value,
-    amountPaid: q.paid,
-    paymentDate: q.paymentDate,
-    status: q.state === 'pagada' ? 'pagado' : 'pendiente',
-    statusLabel: q.stateLabel,
-  })),
+  client: {
+    name: client?.name || '',
+    idNumber: client?.idNumber || '',
+    phone: client?.phone || '',
+    email: client?.email || '',
+  },
+  summary,
 });

@@ -1,4 +1,5 @@
 import XLSX from 'xlsx';
+import { agencyName } from './agency.js';
 import { bogotaDay, fileDisposition, statementTitle } from '../services/statementSummary.service.js';
 
 const day = (date) => (date ? bogotaDay(date) : '');
@@ -9,14 +10,15 @@ const TYPE_LABELS = { inicial: 'Inicial', normal: 'Ordinaria' };
  * Account statement as an Excel workbook: a summary sheet and the quotas,
  * built from the same summary as the PDF.
  */
-export const buildStatementWorkbook = ({ contract, client, company, summary }) => {
+export const buildStatementWorkbook = ({ contract, client, company, summary, agency }) => {
   const next = summary.nextQuota;
   const summaryRows = [
     [statementTitle(contract?.lot, company), ''],
+    ['Inmobiliaria', agency || ''],
     ['Proyecto', company?.name || ''],
     ['Cliente', client?.name || ''],
     ['Identificación', client?.idNumber || ''],
-    ['Negociación', summary.projectName || ''],
+    ['Negociación', summary.negotiation || ''],
     ['Inmueble', summary.lotLabel],
     ['Generado', day(summary.generatedAt)],
     ['', ''],
@@ -72,8 +74,8 @@ export const buildStatementWorkbook = ({ contract, client, company, summary }) =
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 
-export const sendStatementWorkbook = (res, loaded) => {
-  const buffer = buildStatementWorkbook(loaded);
+export const sendStatementWorkbook = async (res, loaded) => {
+  const buffer = buildStatementWorkbook({ ...loaded, agency: await agencyName(loaded.company) });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', fileDisposition('attachment', statementTitle(loaded.contract?.lot, loaded.company), 'xlsx'));
   res.setHeader('Cache-Control', 'no-store');

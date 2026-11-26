@@ -9,6 +9,7 @@ import Company from '../models/Company.js';
 import { getNextSequence } from '../models/Counter.js';
 import AppError from '../utils/AppError.js';
 import { uploadToR2 } from '../utils/storage.js';
+import { receiptParties } from '../utils/agency.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { generateStatementStream } from '../utils/statement.js';
 import { loadStatement, toStatementPdfData, buildStatementSummary, lotLabel, quotaPendingAmount } from '../services/statementSummary.service.js';
@@ -498,9 +499,6 @@ export const getPortalReceiptPDF = async (req, res, next) => {
     const firstQuota = quotas[0];
     const company = await Company.findById(firstQuota.companyId);
     
-    // Load Tenant (Matriz) info from Settings
-    const Tenant = (await import('../models/Tenant.js')).default;
-    const tenant = await Tenant.findById(firstQuota.tenantId);
 
     if (!attempt.receiptNumber) {
       attempt.receiptNumber = await getNextSequence(firstQuota.companyId, firstQuota.tenantId, 'RECEIPT');
@@ -535,15 +533,7 @@ export const getPortalReceiptPDF = async (req, res, next) => {
       clientPhone: firstQuota.contract.client.phone || '',
       clientAddress: firstQuota.contract.client.address || '',
       clientCity: firstQuota.contract.client.expeditionPlace || '',
-      companyName: tenant?.name || company?.name || '',
-      companyNit: tenant?.nit || company?.nit || '',
-      companyAddress: tenant?.address || company?.address || '',
-      companyPhone: tenant?.phone || company?.phone || '',
-      companyLogo: company?.projectLogo || company?.logo || '',
-      lotInfo: firstQuota.contract.lot 
-        ? `Etapa: ${firstQuota.contract.lot.stage || '-'} - Manzana: ${firstQuota.contract.lot.manzana || '-'} - Lote: ${firstQuota.contract.lot.lotNumber || '-'}${firstQuota.contract.lot.nomenclature ? ` (${firstQuota.contract.lot.nomenclature})` : ''}`
-        : 'N/A',
-      projectName: company?.name || '',
+      ...(await receiptParties(company, firstQuota.contract.lot, lotLabel)),
       paymentBank: attempt.banco,
       observations: combinedObservations,
       paymentCapture: attempt.comprobante,
@@ -665,7 +655,7 @@ export const getPortalStatementPDF = async (req, res, next) => {
       return next(new AppError('Contrato no encontrado o no pertenece a este cliente', 404));
     }
 
-    const statementData = toStatementPdfData(loaded);
+    const statementData = await toStatementPdfData(loaded);
     await recordDelivery({ loaded, channel: 'pdf', source: 'portal', req });
 
     await generateStatementStream(statementData, res);

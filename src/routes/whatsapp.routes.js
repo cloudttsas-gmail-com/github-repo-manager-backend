@@ -7,7 +7,7 @@ import {
   getTemplates,
   createDefaultTemplates,
   createTemplate,
-  editTemplate,
+  editTemplate, getTemplateHistory, restoreTemplateVersion,
   getTemplateFields,
   prepareTemplateHeader,
   deleteTemplate,
@@ -55,6 +55,8 @@ router.get('/template-fields', canFollowUp, companyMiddleware, getTemplateFields
 router.post('/templates/header-sample', canFollowUp, companyMiddleware, uploadTemplateMedia.single('file'), prepareTemplateHeader);
 router.post('/templates', canFollowUp, companyMiddleware, createTemplate);
 router.put('/templates/:id', canFollowUp, companyMiddleware, editTemplate);
+router.get('/templates/:id/history', canFollowUp, companyMiddleware, getTemplateHistory);
+router.post('/templates/:id/restore', canFollowUp, companyMiddleware, restoreTemplateVersion);
 router.delete('/templates/:name', canFollowUp, companyMiddleware, deleteTemplate);
 router.get('/history/conversation/:conversationId', canFollowUp, companyMiddleware, getChatHistory);
 router.get('/history/:clientId', canFollowUp, companyMiddleware, getChatHistory);

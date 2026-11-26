@@ -4,6 +4,7 @@ import Contract from '../models/Contract.js';
 import { sendEmail } from './notifications.js';
 import { agencyName, inProject } from './agency.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
+import { quotaLabel } from '../services/statementSummary.service.js';
 import { publicLinkUrl, signReceiptUrl } from './publicLinks.js';
 
 /**
@@ -48,7 +49,7 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
         q.receiptUrl = signedUrl;
         await Quota.findByIdAndUpdate(q._id, { receiptUrl: q.receiptUrl });
       }
-      quotaDetailsList.push(`Cuota #${q.number} (${q.type === 'inicial' ? 'inicial' : 'ordinaria'}): $${(q.amountPaid || q.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`);
+      quotaDetailsList.push(`${quotaLabel(q)}: $${(q.amountPaid || q.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`);
     }
 
     // WhatsApp from the company's number, with the receipt of the whole payment attached
@@ -74,7 +75,7 @@ export const sendConsolidatedPaymentNotifications = async (req, paidQuotaIds, co
       const subject = `Comprobante de Pago Consolidado - ${agency}`;
       const quotaRowsHtml = quotas.map(q => `
         <tr style="border-bottom: 1px solid #e2e8f0;">
-          <td style="padding: 10px; font-weight: bold;">Cuota #${q.number} (${q.type === 'inicial' ? 'inicial' : 'ordinaria'})</td>
+          <td style="padding: 10px; font-weight: bold;">${quotaLabel(q)}</td>
           <td style="padding: 10px; text-align: right;">$${(q.amountPaid || q.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}</td>
           <td style="padding: 10px; text-align: center;"><a href="${q.receiptUrl}" style="color: #0284c7; text-decoration: none; font-weight: bold;">Ver Recibo</a></td>
         </tr>

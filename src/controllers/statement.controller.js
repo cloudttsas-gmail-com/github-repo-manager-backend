@@ -228,7 +228,7 @@ export const getPublicStatementExcel = async (req, res, next) => {
     const loaded = await loadStatement({ _id: contractId }, { apiUrl: apiUrlOf(req) });
     if (!loaded) return next(new AppError('Contrato no encontrado', 404));
 
-    sendStatementWorkbook(res, loaded);
+    await sendStatementWorkbook(res, loaded);
   } catch (error) {
     next(error);
   }
@@ -249,7 +249,7 @@ export const getPortalStatementExcel = async (req, res, next) => {
     const loaded = await loadPortalStatement(req);
     if (!loaded) return next(new AppError('Contrato no encontrado o no pertenece a este cliente', 404));
     await recordDelivery({ loaded, channel: 'excel', source: 'portal', req });
-    sendStatementWorkbook(res, loaded);
+    await sendStatementWorkbook(res, loaded);
   } catch (error) {
     next(error);
   }
@@ -282,7 +282,7 @@ export const sendPortalStatementEmail = async (req, res, next) => {
 const findVerifiedSession = async (companySlug, token) => {
   if (!token) throw new AppError('Verificación de identidad requerida', 401);
   const company = await Company.findOne({ slug: companySlug });
-  if (!company) throw new AppError('Empresa no encontrada', 404);
+  if (!company) throw new AppError('Proyecto no encontrado', 404);
 
   const session = await VerificationToken.findOne({
     token: String(token),
@@ -312,7 +312,7 @@ export const getPublicStatement = async (req, res, next) => {
     const summaries = contracts.map((contract) => buildStatementSummary(
       contract,
       quotas.filter((q) => String(q.contract) === String(contract._id)),
-      { apiUrl },
+      { apiUrl, projectName: company.name },
     ));
 
     await Promise.all(contracts.map((contract, i) => recordDelivery({
@@ -326,6 +326,7 @@ export const getPublicStatement = async (req, res, next) => {
       data: {
         client: { name: client.name, hasEmail: !!client.email },
         companyName: company.name,
+        agencyName: await agencyName(company),
         contracts: summaries,
       },
     });

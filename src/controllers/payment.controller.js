@@ -8,7 +8,8 @@ import PaymentAttempt from '../models/PaymentAttempt.js';
 import { getNextSequence } from '../models/Counter.js';
 import AppError from '../utils/AppError.js';
 import { sendEmail } from '../utils/notifications.js';
-import { agencyName } from '../utils/agency.js';
+import { agencyName, inProject } from '../utils/agency.js';
+import { quotaLabel } from '../services/statementSummary.service.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { generateSiigoExcel } from '../utils/siigoExport.js';
@@ -225,17 +226,19 @@ const sendPaymentNotifications = async (req, quotaId, companyId) => {
     // Send Email
     const clientEmail = fullQuota.contract.client.email;
     if (clientEmail) {
-      const agency = await agencyName(company, 'Recaudos');
-      const subject = `Recibo de Pago: Cuota #${fullQuota.number} - ${agency}`;
+      const agency = await agencyName(company, 'Inmobiliaria');
+      const quotaName = quotaLabel(fullQuota).toLowerCase();
+      const property = [propertyName(fullQuota.contract.lot, company?.propertyType), inProject(company, agency)].filter(Boolean).join(' ');
+      const subject = `Recibo de pago: ${quotaName} - ${agency}`;
       const htmlMessage = `
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
           <h2 style="color: #007cba;">Confirmación de Pago</h2>
           <p>Hola <strong>${fullQuota.contract.client.name}</strong>,</p>
-          <p>Te enviamos el recibo oficial de tu pago de la cuota <strong>#${fullQuota.number}</strong> y tu estado de cuenta actualizado.</p>
+          <p>Te enviamos el recibo oficial de tu pago de la <strong>${quotaName}</strong> y tu estado de cuenta actualizado.</p>
           
           <div style="background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
             <p style="margin: 0;"><strong>Monto:</strong> $${(fullQuota.amountPaid || fullQuota.value).toLocaleString('es-CO', { maximumFractionDigits: 0 })}</p>
-            <p style="margin: 5px 0 0 0;"><strong>Concepto:</strong> Pago de cuota - ${fullQuota.contract.lot?.stage || 'Proyecto'}</p>
+            <p style="margin: 5px 0 0 0;"><strong>Concepto:</strong> Pago de ${quotaName} de ${property}</p>
           </div>
 
           <p>Puedes descargar tu recibo de caja oficial y consultar tu estado de cuenta en línea utilizando los siguientes botones:</p>

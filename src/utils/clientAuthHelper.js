@@ -5,6 +5,7 @@ import Company from '../models/Company.js';
 import Contract from '../models/Contract.js';
 import { sendEmail } from './notifications.js';
 import { agencyName, inProject } from './agency.js';
+import { quotaLabel, quotaState, QUOTA_STATE_LABELS } from '../services/statementSummary.service.js';
 import { sendCompanyNotice, propertyName } from '../services/whatsappTemplates.service.js';
 
 // «el lote 12 de la manzana B» from the buyer's latest contract in the project
@@ -118,7 +119,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
       });
 
       const rows = sortedQuotas.map((q) => {
-        const typeStr = q.number === 0 ? 'Separación' : q.type === 'inicial' ? `Inicial #${q.number}` : `Ordinaria #${q.number}`;
+        const typeStr = quotaLabel(q);
         const formattedDueDate = q.dueDate
           ? new Date(q.dueDate).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
           : 'N/A';
@@ -128,7 +129,7 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
             <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px;">${typeStr}</td>
             <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px;">${formattedDueDate}</td>
             <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; font-weight: bold; text-align: right;">${formattedValue}</td>
-            <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; text-align: center;">${q.status === 'pagado' ? '✅ PAGADO' : '⏳ Pendiente'}</td>
+            <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; text-align: center;">${QUOTA_STATE_LABELS[quotaState(q)]}</td>
           </tr>
         `;
       }).join('');
@@ -228,7 +229,7 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
     });
 
     const rows = sortedQuotas.map((q) => {
-      const typeStr = q.number === 0 ? 'Separación' : q.type === 'inicial' ? `Inicial #${q.number}` : `Ordinaria #${q.number}`;
+      const typeStr = quotaLabel(q);
       const formattedDueDate = q.dueDate
         ? new Date(q.dueDate).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
         : 'N/A';
@@ -238,7 +239,7 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
           <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px;">${typeStr}</td>
           <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px;">${formattedDueDate}</td>
           <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; font-weight: bold; text-align: right;">${formattedValue}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; text-align: center;">${q.status === 'pagado' ? '✅ PAGADO' : '⏳ Pendiente'}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; text-align: center;">${QUOTA_STATE_LABELS[quotaState(q)]}</td>
         </tr>
       `;
     }).join('');

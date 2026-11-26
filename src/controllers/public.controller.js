@@ -1,4 +1,4 @@
-import { agencyName } from '../utils/agency.js';
+import { agencyName, receiptParties } from '../utils/agency.js';
 import crypto from 'crypto';
 import { isValidPublicLink, allowsUnsignedLink } from '../utils/publicLinks.js';
 import Client from '../models/Client.js';
@@ -11,7 +11,7 @@ import { uploadToR2 } from '../utils/storage.js';
 import { generateReceiptStream } from '../utils/receipt.js';
 import { getNextSequence } from '../models/Counter.js';
 import { generateStatementStream } from '../utils/statement.js';
-import { loadStatement, toStatementPdfData } from '../services/statementSummary.service.js';
+import { loadStatement, toStatementPdfData, lotLabel } from '../services/statementSummary.service.js';
 import { parseBusinessDate } from '../utils/dates.js';
 import { resolveBankChoice } from '../utils/bankAccounts.js';
 import { parsePositiveAmount } from '../utils/math.js';
@@ -108,9 +108,6 @@ export const getReceiptPDF = async (req, res, next) => {
         const firstQuota = quotas[0];
         const company = await Company.findById(firstQuota.companyId);
         
-        // Load Tenant (Matriz) info from Settings
-        const Tenant = (await import('../models/Tenant.js')).default;
-        const tenant = await Tenant.findById(firstQuota.tenantId);
 
         if (!attempt.receiptNumber) {
           attempt.receiptNumber = await getNextSequence(firstQuota.companyId, firstQuota.tenantId, 'RECEIPT');
@@ -143,15 +140,7 @@ export const getReceiptPDF = async (req, res, next) => {
           clientPhone: firstQuota.contract.client.phone || '',
           clientAddress: firstQuota.contract.client.address || '',
           clientCity: firstQuota.contract.client.expeditionPlace || '',
-          companyName: tenant?.name || company?.name || '',
-          companyNit: tenant?.nit || company?.nit || '',
-          companyAddress: tenant?.address || company?.address || '',
-          companyPhone: tenant?.phone || company?.phone || '',
-          companyLogo: company?.projectLogo || company?.logo || '',
-          lotInfo: firstQuota.contract.lot 
-            ? `Etapa: ${firstQuota.contract.lot.stage || '-'} - Manzana: ${firstQuota.contract.lot.manzana || '-'} - Lote: ${firstQuota.contract.lot.lotNumber || '-'}${firstQuota.contract.lot.nomenclature ? ` (${firstQuota.contract.lot.nomenclature})` : ''}`
-            : 'N/A',
-          projectName: company?.name || '',
+          ...(await receiptParties(company, firstQuota.contract.lot, lotLabel)),
           paymentBank: attempt.banco,
           observations: combinedObservations,
           paymentCapture: attempt.comprobante,
@@ -188,9 +177,6 @@ export const getReceiptPDF = async (req, res, next) => {
 
     const company = await Company.findById(quota.companyId);
     
-    // Load Tenant (Matriz) info from Settings
-    const Tenant = (await import('../models/Tenant.js')).default;
-    const tenant = await Tenant.findById(quota.tenantId);
 
     const receiptData = {
       receiptNumber: quota.receiptNumber,
@@ -202,15 +188,7 @@ export const getReceiptPDF = async (req, res, next) => {
       clientPhone: quota.contract.client.phone || '',
       clientAddress: quota.contract.client.address || '',
       clientCity: quota.contract.client.expeditionPlace || '',
-      companyName: tenant?.name || company?.name || '',
-      companyNit: tenant?.nit || company?.nit || '',
-      companyAddress: tenant?.address || company?.address || '',
-      companyPhone: tenant?.phone || company?.phone || '',
-      companyLogo: company?.projectLogo || company?.logo || '',
-      lotInfo: quota.contract.lot 
-        ? `Etapa: ${quota.contract.lot.stage || '-'} - Manzana: ${quota.contract.lot.manzana || '-'} - Lote: ${quota.contract.lot.lotNumber || '-'}${quota.contract.lot.nomenclature ? ` (${quota.contract.lot.nomenclature})` : ''}`
-        : 'N/A',
-      projectName: company?.name || '',
+      ...(await receiptParties(company, quota.contract.lot, lotLabel)),
       paymentBank: quota.paymentBank,
       observations: quota.paymentObservations,
       paymentCapture: quota.paymentCapture,
@@ -241,7 +219,7 @@ export const getStatementPDF = async (req, res, next) => {
       return next(new AppError('Contrato no encontrado', 404));
     }
 
-    const statementData = toStatementPdfData(loaded);
+    const statementData = await toStatementPdfData(loaded);
 
     await generateStatementStream(statementData, res);
   } catch (error) {
@@ -259,7 +237,7 @@ export const getClientInfo = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug });
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     const client = await Client.findOne({
@@ -268,7 +246,7 @@ export const getClientInfo = async (req, res, next) => {
     }).select('email phone');
 
     if (!client) {
-      return next(new AppError('Cliente no encontrado en esta empresa', 404));
+      return next(new AppError('Cliente no encontrado en este proyecto', 404));
     }
 
     const maskEmail = (email) => {
@@ -476,7 +454,7 @@ export const getCompanyAccountsPublic = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug }).select('name logo nit address phone bankAccounts');
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     res.json({
@@ -514,12 +492,12 @@ export const sendOTPCodePublic = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug });
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     const client = await Client.findOne({ idNumber, companyId: company._id });
     if (!client) {
-      return next(new AppError('Cliente no encontrado en esta empresa', 404));
+      return next(new AppError('Cliente no encontrado en este proyecto', 404));
     }
 
     let destination = '';
@@ -564,7 +542,7 @@ export const verifyOTPCodePublic = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug });
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     const VerificationToken = (await import('../models/VerificationToken.js')).default;
@@ -655,7 +633,7 @@ export const getClientByValidationToken = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug });
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     const client = await Client.findOne({
@@ -697,7 +675,7 @@ export const confirmClientValidation = async (req, res, next) => {
 
     const company = await Company.findOne({ slug: companySlug });
     if (!company) {
-      return next(new AppError('Empresa no encontrada', 404));
+      return next(new AppError('Proyecto no encontrado', 404));
     }
 
     const client = await Client.findOne({

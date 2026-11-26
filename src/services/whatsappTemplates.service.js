@@ -3,6 +3,7 @@ import { GRAPH_API_URL } from '../config/meta.js';
 import { whatsappService } from './whatsapp.service.js';
 import AppError from '../utils/AppError.js';
 import { agencyName, inProject } from '../utils/agency.js';
+import { recordVersion } from './templateHistory.service.js';
 import Lot from '../models/Lot.js';
 import Quota from '../models/Quota.js';
 import Contract from '../models/Contract.js';
@@ -250,7 +251,7 @@ const uploadSampleDocument = async (accessToken) => uploadToMeta(accessToken, aw
  * Creates in the company's account the default templates it does not have yet.
  * Returns one row per template: created, existing (with its Meta status) or the error.
  */
-export const ensureDefaultTemplates = async (company) => {
+export const ensureDefaultTemplates = async (company, { actor } = {}) => {
   const account = companyWhatsAppAccount(company);
   if (!account) throw new Error('El proyecto no tiene un número de WhatsApp conectado');
 
@@ -273,6 +274,7 @@ export const ensureDefaultTemplates = async (company) => {
       // A rejected default gets the current text and goes back to review
       try {
         await whatsappService.editTemplate(account, current.id, { category: definition.category, components: definition.components(context) });
+        await recordVersion(company, { ...current, category: definition.category, components: definition.components(context) }, { action: 'edited', actor }).catch(() => null);
         results.push({ name, result: 'resubmitted', status: 'PENDING' });
       } catch (error) {
         results.push({ name, result: 'error', status: 'REJECTED', error: error.message });
@@ -287,6 +289,7 @@ export const ensureDefaultTemplates = async (company) => {
       const created = await whatsappService.createTemplate(account, {
         name, language: LANGUAGE, category: definition.category, components: definition.components(context),
       });
+      await recordVersion(company, { id: created.id, name, language: LANGUAGE, category: definition.category, components: definition.components(context) }, { action: 'created', actor }).catch(() => null);
       results.push({ name, result: 'created', status: created.status || 'PENDING' });
     } catch (error) {
       results.push({ name, result: 'error', error: error.message });
@@ -578,3 +581,37 @@ export const buildTemplateEdit = async (company, current, input = {}, fields = t
 
 // Every {{n}} of a text, in numeric order and with repeats
 const templateVariables = (text) => [...text.matchAll(VARIABLE)].map((m) => m[1]).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+
+/** A fresh sample of a version's media header: Meta needs one on every edit. */
+const restoredHeaderHandle = async (company, format, media) => {
+  const account = companyWhatsAppAccount(company);
+  if (format === 'DOCUMENT' && media?.source !== 'file') return uploadSampleDocument(account.accessToken);
+  if (media?.source === 'file' && media.fileUrl) {
+    const response = await fetch(media.fileUrl, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) fail('Ya no está el archivo del encabezado de esa versión.');
+    const type = response.headers.get('content-type') || { IMAGE: 'image/jpeg', VIDEO: 'video/mp4', DOCUMENT: 'application/pdf' }[format];
+    return uploadToMeta(account.accessToken, Buffer.from(await response.arrayBuffer()), type, media.fileName || 'archivo');
+  }
+  return fail('Esa versión no guardó el archivo de su encabezado: no se puede restaurar desde Operix.');
+};
+
+/**
+ * Meta's edit payload that brings a template back to an earlier version. The notices of Operix only
+ * take back their text (their data stay where the send side expects them); the rest take back every
+ * part, with a fresh sample for a media header.
+ */
+export const buildRestoreEdit = async (company, current, version) => {
+  if (!EDITABLE_STATUSES.includes(current.status)) fail('Meta está revisando esta plantilla o la desactivó: todavía no se puede editar.');
+  if (current.category === 'AUTHENTICATION') fail('Las plantillas de código tienen un texto fijo de Meta y no se editan.');
+  const body = (version.components || []).find((c) => c.type === 'BODY');
+  if (current.name.startsWith('operix_')) return buildTemplateEdit(company, current, { body: body?.text || '' });
+
+  const components = JSON.parse(JSON.stringify(version.components || []));
+  const header = components.find((c) => c.type === 'HEADER' && MEDIA_FORMATS.includes(c.format));
+  if (header) header.example = { header_handle: [await restoredHeaderHandle(company, header.format, version.media)] };
+  return {
+    ...(current.status === 'APPROVED' || !version.category ? {} : { category: version.category }),
+    ...(version.parameterFormat ? { parameter_format: version.parameterFormat } : {}),
+    components,
+  };
+};

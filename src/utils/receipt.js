@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { loadPdfImage } from './pdfImage.js';
 
 /**
  * Convert number to Spanish words.
@@ -137,6 +138,7 @@ export const generateReceiptStream = async (data, res) => {
     companyPhone,
     lotInfo,
     projectName,
+    propertyType = 'lotes',
     paymentBank,
     observations,
     paymentCapture,
@@ -153,11 +155,12 @@ export const generateReceiptStream = async (data, res) => {
   res.setHeader('Content-Disposition', `inline; filename=recibo_caja_${fileNum}.pdf`);
   doc.pipe(res);
 
-  // ================= COMPANY LOGO (Dynamic / Placeholder) =================
-  if (data.companyLogo) {
+  // ================= INMOBILIARIA LOGO (Dynamic / Placeholder) =================
+  const logoImage = await loadPdfImage(data.companyLogo);
+  if (logoImage) {
     try {
       // Render the company's logo if provided
-      doc.image(data.companyLogo, 35, 35, { width: 75, height: 50 });
+      doc.image(logoImage, 35, 35, { fit: [75, 50] });
     } catch (err) {
       // Fallback placeholder on image load/parse error
       doc.save();
@@ -210,7 +213,9 @@ export const generateReceiptStream = async (data, res) => {
      .fillColor('#212121')
      .text('Recibo Caja/Ingreso', 410, 45, { width: 167, align: 'right' });
   
-  const isSeparation = Number(quotaNumber) === 0 || quotaNumber === '0';
+  const isSeparation = Number(quotaNumber) === 0 || quotaNumber === '0' || quotaNumber === 'SEPARACIÓN';
+  // «SEPARACIÓN, 1» when one payment covered several quotas
+  const severalQuotas = String(quotaNumber ?? '').includes(',');
   const receiptLabel = receiptNumber !== undefined && receiptNumber !== null
     ? `No. ${receiptNumber}`
     : (isSeparation ? 'No SEPARACIÓN' : `No ${quotaNumber}`);
@@ -260,7 +265,7 @@ export const generateReceiptStream = async (data, res) => {
   doc.font('Helvetica-Bold').text((clientName || '').toUpperCase(), 115, gridY + 6);
   
   // Row 2
-  doc.font('Helvetica-Bold').text('NIT', 38, gridY + 27);
+  doc.font('Helvetica-Bold').text('C.C. / NIT', 38, gridY + 27);
   doc.font('Helvetica').text(clientId || '', 115, gridY + 27);
   doc.font('Helvetica-Bold').text('Teléfono', 233, gridY + 27);
   doc.font('Helvetica').text(clientPhone || '', 295, gridY + 27);
@@ -333,8 +338,10 @@ export const generateReceiptStream = async (data, res) => {
 
   // Rows Content
   doc.fontSize(8.5).font('Helvetica').fillColor('#212121');
-  const projectConceptPrefix = projectName ? `Proyecto: ${projectName} - ` : '';
-  doc.text(isSeparation ? `Abono de Separación - ${projectConceptPrefix}Lote: ${lotInfo}` : `Abono Cuota #${quotaNumber} - ${projectConceptPrefix}Lote: ${lotInfo}`, 40, tableY + 27, { width: 432, height: 16, ellipsis: true });
+  const projectConceptPrefix = projectName ? `Proyecto ${projectName} - ` : '';
+  const noun = { lotes: 'Lote', casas: 'Casa', apartamentos: 'Apartamento', locales: 'Local' }[propertyType] || 'Inmueble';
+  const concept = severalQuotas ? `Abono cuotas ${String(quotaNumber).replace('SEPARACIÓN', 'separación')}` : isSeparation ? 'Abono de separación' : `Abono cuota ${quotaNumber}`;
+  doc.text(`${concept} - ${projectConceptPrefix}${noun}: ${lotInfo}`, 40, tableY + 27, { width: 432, height: 16, ellipsis: true });
   doc.text(
     `$ ${amount.toLocaleString('es-CO', { minimumFractionDigits: 2 })}`,
     477, tableY + 27,
@@ -360,7 +367,7 @@ export const generateReceiptStream = async (data, res) => {
 
   doc.fontSize(8.5).font('Helvetica-Bold').text('Observaciones:', 40, obsY + 6);
   doc.fontSize(8.5).font('Helvetica').text(
-    observations || `Pago por cuota registrado el día ${formattedDate} a favor del cliente.`,
+    observations || `Pago registrado el ${formattedDate}.`,
     40, obsY + 18,
     { width: 532, height: 38, lineGap: 2 }
   );
@@ -410,7 +417,7 @@ export const generateReceiptStream = async (data, res) => {
      .font('Helvetica')
      .fillColor('#9e9e9e')
      .text('Este documento es un comprobante de pago oficial emitido de manera electrónica.', 35, 740, { align: 'center', width: 542 });
-  doc.text(`Generado digitalmente en el sistema de gestión el: ${new Date().toLocaleString()}`, { align: 'center', width: 542 });
+  doc.text(`Generado el ${new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })}`, { align: 'center', width: 542 });
 
   // ================= RENDER ATTACHMENT IF IMAGE =================
   if (paymentCapture) {
@@ -441,7 +448,7 @@ export const generateReceiptStream = async (data, res) => {
           doc.fontSize(8.5)
              .font('Helvetica')
              .fillColor('#757575')
-             .text(`Recibo No ${quotaNumber} | Cliente: ${clientName.toUpperCase()}`, 35, 50);
+             .text(`Recibo No. ${fileNum} | Cliente: ${clientName.toUpperCase()}`, 35, 50);
 
           doc.moveTo(35, 62).lineTo(577, 62).lineWidth(0.5).strokeColor('#cccccc').stroke();
 
