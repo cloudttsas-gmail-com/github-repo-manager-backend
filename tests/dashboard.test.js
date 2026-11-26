@@ -10,6 +10,7 @@ import Client from '../src/models/Client.js';
 import Contract from '../src/models/Contract.js';
 import Quota from '../src/models/Quota.js';
 import PaymentAttempt from '../src/models/PaymentAttempt.js';
+import Lot from '../src/models/Lot.js';
 
 const stamp = Date.now();
 const password = 'Password123!';
@@ -48,6 +49,7 @@ describe('Dashboard figures are calculated, not fixed at 0', () => {
   afterAll(async () => {
     const tenantId = owner?.tenantId;
     await PaymentAttempt.deleteMany({ tenantId });
+    await Lot.deleteMany({ tenantId });
     await Quota.deleteMany({ tenantId });
     await Contract.deleteMany({ tenantId });
     await Client.deleteMany({ tenantId });
@@ -68,6 +70,18 @@ describe('Dashboard figures are calculated, not fixed at 0', () => {
     expect(operacion.comprobantesPendientes).toBe(1);
     // partial payments count in what was collected
     expect(cartera.totalRecaudado).toBe(2200000);
+  });
+
+  it('the inventory counts reserved lots and the figures match the table by stage', async () => {
+    const scope = { tenantId: owner.tenantId, companyId: owner.companyId };
+    const statuses = ['disponible', 'disponible', 'apartado', 'separado', 'vendido'];
+    await Lot.insertMany(statuses.map((status, i) => ({ ...scope, stage: '1', manzana: 'A', lotNumber: String(i + 1), reference: `DASH-${stamp}-${i}`, status })));
+
+    const res = await request(app).get(`/api/dashboard/summary?companyId=${owner.companyId}`).set('Authorization', `Bearer ${owner.token}`);
+    const { lotStats } = res.body.data;
+    expect(lotStats).toMatchObject({ available: 2, reserved: 1, separated: 1, sold: 1 });
+    const stage = lotStats.byStage.find((s) => String(s.stage) === '1');
+    expect(stage).toMatchObject({ total: 5, disponibles: 2, apartados: 1, separados: 1, vendidos: 1 });
   });
 
   it('the monthly chart has the last six months with what fell due', async () => {

@@ -5,6 +5,7 @@ import Company from '../models/Company.js';
 import mongoose from 'mongoose';
 import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AuditLog from '../models/AuditLog.js';
+import { logAudit } from '../utils/auditLogger.js';
 import { sendEmail } from '../utils/notifications.js';
 import AppError from '../utils/AppError.js';
 import { visibleEmail } from '../utils/portalAccount.js';
@@ -47,6 +48,18 @@ export const getAllUsers = async (req, res, next) => {
     const total = memberships.length;
     const paginatedMemberships = memberships.slice(skip, skip + limitNum);
 
+    // Projects of each member, so the team screen can show and take them away
+    const assignments = await UserCompany.find({ tenantId, userId: { $in: paginatedMemberships.map((m) => m._id) } })
+      .populate('companyId', 'name')
+      .lean();
+    const projectsOf = new Map();
+    for (const a of assignments) {
+      if (!a.companyId) continue;
+      const key = String(a.userId);
+      if (!projectsOf.has(key)) projectsOf.set(key, []);
+      projectsOf.get(key).push({ id: a.companyId._id, name: a.companyId.name });
+    }
+
     const users = paginatedMemberships.map((m) => ({
       id: m._id,
       accountId: m.accountId._id,
@@ -59,6 +72,7 @@ export const getAllUsers = async (req, res, next) => {
       accountStatus: m.accountId.status,
       lastLogin: m.accountId.lastLogin,
       createdAt: m.createdAt,
+      companies: projectsOf.get(String(m._id)) || [],
     }));
 
     res.json({
@@ -168,12 +182,16 @@ export const createUser = async (req, res, next) => {
       companyIds = [];
     }
 
+    if (role === 'cliente') {
+      return next(new AppError('Los compradores se crean desde Clientes, no desde Usuarios', 400));
+    }
+
     if (!canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
     }
 
     if (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds))) {
-      return next(new AppError('No puedes asignar esa empresa', 403));
+      return next(new AppError('No puedes asignar ese proyecto', 403));
     }
 
     // Check if a membership already exists in this tenant for this email
@@ -268,15 +286,31 @@ export const updateUser = async (req, res, next) => {
       return next(new AppError('No puedes modificar a este usuario', 403));
     }
 
+    if (role && role !== membership.role && role === 'cliente') {
+      return next(new AppError('Los compradores se crean desde Clientes, no desde Usuarios', 400));
+    }
+
     if (role && role !== membership.role && !canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
+    }
+
+    // Projects to take away from the member (only ones the requester may assign)
+    const { removeCompanyIds } = req.body;
+    if (removeCompanyIds !== undefined && (!Array.isArray(removeCompanyIds) || !(await canAssignCompanies(req.user, removeCompanyIds)))) {
+      return next(new AppError('No puedes quitar ese proyecto', 403));
+    }
+    const removing = new Set((removeCompanyIds || []).map(String));
+    if (isSelf && removing.size > 0) {
+      return next(new AppError('No puedes quitarte un proyecto a ti mismo', 403));
     }
 
     let { companyIds, companyId } = req.body;
     if (!companyIds && companyId) companyIds = [companyId];
     if (companyIds && (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds)))) {
-      return next(new AppError('No puedes asignar esa empresa', 403));
+      return next(new AppError('No puedes asignar ese proyecto', 403));
     }
+    // The app always sends the open project; it never re-adds one being removed
+    if (companyIds) companyIds = companyIds.filter((id) => !removing.has(String(id)));
 
     if (role) membership.role = role;
     if (status) membership.status = status;
@@ -303,6 +337,16 @@ export const updateUser = async (req, res, next) => {
           });
         }
       }
+    }
+
+    if (removing.size > 0) {
+      await UserCompany.deleteMany({ userId: membership._id, tenantId, companyId: { $in: [...removing] } });
+      await logAudit(req, {
+        action: 'REMOVE_USER_PROJECTS',
+        module: 'USERS',
+        targetId: membership._id,
+        details: { email: membership.accountId?.email, companyIds: [...removing] },
+      });
     }
 
     // Update fullName on the account if provided
@@ -409,7 +453,7 @@ export const deleteUser = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'User removed from team successfully',
+      message: 'Usuario eliminado del equipo',
     });
   } catch (error) {
     next(error);
@@ -486,7 +530,7 @@ export const updateProfile = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Profile updated successfully',
+      message: 'Perfil actualizado',
       data: { fullName: account.fullName }
     });
   } catch (error) {
@@ -556,7 +600,7 @@ export const uploadProfileImage = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Profile photo uploaded successfully',
+      message: 'Foto de perfil actualizada',
       data: { profileImage: imageUrl }
     });
   } catch (error) {
