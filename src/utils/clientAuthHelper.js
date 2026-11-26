@@ -213,8 +213,20 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
  */
 // updateReason: why an already sent plan changed (e.g. the initial was paid or an otrosí); empty on the first plan
 export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, updateReason = '') => {
-  if (!client.email || !quotas || quotas.length === 0) return;
-  
+  if (!quotas || quotas.length === 0) return;
+
+  // By WhatsApp too, with the PDF (operix_plan_pagos / operix_plan_actualizado), inside the contact hours
+  if (client.phone) {
+    try {
+      const company = await Company.findById(companyId);
+      const { queuePaymentPlanNotice } = await import('../services/automaticNotices.service.js');
+      await queuePaymentPlanNotice({ company, client, contract, quotas, updateReason });
+    } catch (error) {
+      console.error('[CLIENT_AUTH_HELPER] Error queuing the payment plan WhatsApp:', error.message);
+    }
+  }
+  if (!client.email) return;
+
   try {
     const company = await Company.findById(companyId);
     const agency = await agencyName(company, 'Inmobiliaria');

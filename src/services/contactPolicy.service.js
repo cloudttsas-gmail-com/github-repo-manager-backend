@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import CampaignRecipient from '../models/CampaignRecipient.js';
 import CollectionAction from '../models/CollectionAction.js';
+import ScheduledNotice from '../models/ScheduledNotice.js';
 
 /**
  * When and how often a project may contact its buyers: the limits of Ley 2300 de 2023 (to be
@@ -149,14 +150,15 @@ export const startOfBogotaWeek = (now = new Date()) => {
 };
 
 /**
- * WhatsApp collection contacts of each client this week: messages of sends that went out and
- * collection actions recorded by WhatsApp. Returns a Map clientId → count.
+ * WhatsApp collection contacts of each client this week: messages of sends that went out, quota
+ * reminders Operix sent on its own and collection actions recorded by WhatsApp.
+ * Returns a Map clientId → count.
  */
-export const weeklyWhatsAppContacts = async ({ tenantId, companyId, clientIds, excludeCampaignId }, now = new Date()) => {
+export const weeklyWhatsAppContacts = async ({ tenantId, companyId, clientIds, excludeCampaignId, excludeNoticeId }, now = new Date()) => {
   const since = startOfBogotaWeek(now);
   const ids = clientIds.map((id) => new mongoose.Types.ObjectId(String(id)));
   const scope = { tenantId: new mongoose.Types.ObjectId(String(tenantId)), companyId: new mongoose.Types.ObjectId(String(companyId)), clientId: { $in: ids } };
-  const [sent, actions] = await Promise.all([
+  const [sent, actions, reminders] = await Promise.all([
     CampaignRecipient.aggregate([
       { $match: { ...scope, sentAt: { $gte: since }, ...(excludeCampaignId ? { campaignId: { $ne: new mongoose.Types.ObjectId(String(excludeCampaignId)) } } : {}) } },
       { $group: { _id: '$clientId', count: { $sum: 1 } } },
@@ -165,8 +167,12 @@ export const weeklyWhatsAppContacts = async ({ tenantId, companyId, clientIds, e
       { $match: { ...scope, channel: 'whatsapp', createdAt: { $gte: since } } },
       { $group: { _id: '$clientId', count: { $sum: 1 } } },
     ]),
+    ScheduledNotice.aggregate([
+      { $match: { ...scope, collection: true, sentAt: { $gte: since }, ...(excludeNoticeId ? { _id: { $ne: new mongoose.Types.ObjectId(String(excludeNoticeId)) } } : {}) } },
+      { $group: { _id: '$clientId', count: { $sum: 1 } } },
+    ]),
   ]);
   const counts = new Map();
-  [...sent, ...actions].forEach((row) => counts.set(String(row._id), (counts.get(String(row._id)) || 0) + row.count));
+  [...sent, ...actions, ...reminders].forEach((row) => counts.set(String(row._id), (counts.get(String(row._id)) || 0) + row.count));
   return counts;
 };

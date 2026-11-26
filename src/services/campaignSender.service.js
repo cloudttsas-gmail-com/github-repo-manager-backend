@@ -17,6 +17,11 @@ const STALE_MS = 10 * 60 * 1000;
 let running = false;
 let timer = null;
 
+// How Meta's template states read on a send that waits for them
+const TEMPLATE_STATUS_LABELS = {
+  PAUSED: 'en pausa', PENDING: 'en revisión', IN_APPEAL: 'en apelación', REJECTED: 'rechazada', DISABLED: 'desactivada', PENDING_DELETION: 'por borrar',
+};
+
 const finish = (campaign) => Campaign.updateOne({ _id: campaign._id, status: 'sending' }, { status: 'sent', finishedAt: new Date(), notice: null });
 
 /** Marks every recipient still waiting with a reason, when the send can't go on. */
@@ -74,7 +79,7 @@ export const sendCampaignBatches = async (campaign, now = () => new Date()) => {
   if (!template) return failQueued(campaign, 'La plantilla ya no existe en Meta');
   if (!template.usable) {
     // Paused or in review again: wait for Meta instead of failing the whole send
-    if (template.status !== 'APPROVED') return setNotice(campaign, `Meta tiene la plantilla en estado ${template.status}; el envío sigue cuando vuelva a estar aprobada.`);
+    if (template.status !== 'APPROVED') return setNotice(campaign, `Meta tiene la plantilla ${TEMPLATE_STATUS_LABELS[template.status] || 'sin aprobar'}; el envío sigue cuando vuelva a estar aprobada.`);
     return failQueued(campaign, template.reason);
   }
   if (campaign.notice) await setNotice(campaign, null);

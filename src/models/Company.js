@@ -104,6 +104,11 @@ const companySchema = new mongoose.Schema({
     saturdayStart: Number,
     saturdayEnd: Number,
   },
+  // Quota reminders Operix sends on its own by WhatsApp (operix_cuota_por_vencer / operix_cuota_vencida); off until the project turns them on
+  reminders: {
+    enabled: { type: Boolean, default: false },
+    daysBefore: Number,
+  },
 }, {
   timestamps: true,
 });

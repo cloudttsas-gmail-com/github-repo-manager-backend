@@ -1,7 +1,7 @@
 import PaymentAttempt from '../models/PaymentAttempt.js';
 import TemplateMedia from '../models/TemplateMedia.js';
 import { whatsappService } from './whatsapp.service.js';
-import { companyWhatsAppAccount, money, propertyName, shortDate, TEMPLATE_FIELDS } from './whatsappTemplates.service.js';
+import { companyWhatsAppAccount, money, propertyName, quotaNumberText, shortDate, TEMPLATE_FIELDS } from './whatsappTemplates.service.js';
 import { publicLinkUrl } from '../utils/publicLinks.js';
 
 const FIELD_KEYS = new Set(TEMPLATE_FIELDS.map((f) => f.key));
@@ -88,7 +88,7 @@ export const recipientValues = ({ company, agency, client, contract, summary, la
     inmueble: filled(propertyName(contract?.lot, company?.propertyType)),
     valor_cuota: filled(next ? money(next.pending) : null),
     fecha_vencimiento: filled(next?.dueDate ? shortDate(next.dueDate) : null),
-    numero_cuota: filled(next?.number),
+    numero_cuota: filled(next ? quotaNumberText(next) : null),
     dias_mora: filled(summary?.daysOverdue ?? 0),
     saldo_pendiente: filled(money(summary?.balance || 0)),
     valor_ultimo_pago: filled(lastPayment ? money(lastPayment.amount) : null),
