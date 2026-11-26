@@ -17,7 +17,7 @@ export const companyMiddleware = async (req, res, next) => {
     const companyId = req.params.companyId || req.body.companyId || req.query.companyId;
 
     if (!companyId) {
-      return next(new AppError('Company ID is required', 400));
+      return next(new AppError('Elige un proyecto', 400));
     }
 
     const { tenantId, isTenantAdmin, userId } = req.user;
@@ -30,7 +30,7 @@ export const companyMiddleware = async (req, res, next) => {
     });
 
     if (!company) {
-      return next(new AppError('Company not found or not accessible', 404));
+      return next(new AppError('No encontramos ese proyecto', 404));
     }
 
     if (isTenantAdmin) {
@@ -55,7 +55,7 @@ export const companyMiddleware = async (req, res, next) => {
     });
 
     if (!userCompany) {
-      return next(new AppError('You do not have access to this company', 403));
+      return next(new AppError('No tienes acceso a este proyecto. Elige otro.', 403));
     }
 
     req.user.companyId = company._id;

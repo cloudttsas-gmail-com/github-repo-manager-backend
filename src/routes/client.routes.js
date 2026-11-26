@@ -478,6 +478,7 @@ router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREAT
     const { id } = req.params;
     const { name, idNumber, phone, email, address, behavior } = req.body;
 
+    const previous = await Client.findOne({ _id: id, tenantId, companyId }).select('email');
     const client = await Client.findOneAndUpdate(
       { _id: id, tenantId, companyId },
       { name, idNumber, phone, email, address, behavior },
@@ -488,6 +489,15 @@ router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREAT
       return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
     }
 
+    // The buyer signs in with the new document or email
+    let portalAccess = { skipped: [] };
+    try {
+      const { syncPortalAccount } = await import('../utils/portalAccount.js');
+      portalAccess = await syncPortalAccount(client, { previousEmail: previous?.email });
+    } catch (syncError) {
+      console.error('[CLIENT_UPDATE] Could not update the portal account:', syncError.message);
+    }
+
     await logAudit(req, {
       action: 'UPDATE_CLIENT',
       module: 'CLIENTS',
@@ -495,7 +505,7 @@ router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREAT
       details: { name, idNumber }
     });
 
-    res.json({ success: true, data: client });
+    res.json({ success: true, data: client, portalAccess });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

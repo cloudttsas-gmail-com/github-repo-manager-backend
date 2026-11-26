@@ -386,6 +386,17 @@ export const reportPayment = async (req, res, next) => {
       return next(new AppError('Este código ya se usó para reportar un pago. Pide uno nuevo si quieres reportar otro.', 409));
     }
 
+    // The phone and email typed on the public link do not replace the buyer's data (anyone with
+    // the code could change them): they go with the payment for the team to review
+    const reportedContact = [];
+    const contactClient = await Client.findById(contract.client).select('phone email');
+    const cleanPhone = String(phone || '').trim();
+    const cleanEmail = String(email || '').trim();
+    if (cleanPhone && cleanPhone !== String(contactClient?.phone || '')) reportedContact.push(`celular ${cleanPhone}`);
+    if (cleanEmail && cleanEmail.toLowerCase() !== String(contactClient?.email || '').toLowerCase()) reportedContact.push(`correo ${cleanEmail}`);
+    const contactNote = reportedContact.length ? `Datos de contacto indicados en el pago: ${reportedContact.join(', ')}.` : '';
+    const paymentObservations = [String(observations || '').trim(), contactNote].filter(Boolean).join('\n');
+
     const attempt = await PaymentAttempt.create({
       tenantId: quota.tenantId,
       companyId: quota.companyId,
@@ -402,7 +413,7 @@ export const reportPayment = async (req, res, next) => {
       paymentMethod,
       fechaPago: targetDate,
       comprobante: captureUrl || undefined,
-      observations: observations || '',
+      observations: paymentObservations,
       status: 'PENDIENTE',
       appliedToQuotas: false,
     }).catch(async (createError) => {
@@ -410,30 +421,6 @@ export const reportPayment = async (req, res, next) => {
       throw createError;
     });
     console.log('[LOG][PUBLIC_REPORT_PAYMENT] Intento de pago creado exitosamente con ID:', attempt._id);
-
-    // Update client contact info if provided
-    try {
-      const client = await Client.findById(contract.client);
-      if (client) {
-        let updated = false;
-        if (phone && phone !== client.phone) {
-          console.log(`[LOG][PUBLIC_REPORT_PAYMENT] Actualizando teléfono de ${client.phone} a ${phone}`);
-          client.phone = phone;
-          updated = true;
-        }
-        if (email && email !== client.email) {
-          console.log(`[LOG][PUBLIC_REPORT_PAYMENT] Actualizando email de ${client.email} a ${email}`);
-          client.email = email;
-          updated = true;
-        }
-        if (updated) {
-          await client.save();
-          console.log('[LOG][PUBLIC_REPORT_PAYMENT] Información del cliente actualizada exitosamente');
-        }
-      }
-    } catch (err) {
-      console.error('[LOG][PUBLIC_REPORT_PAYMENT] Error updating client info during payment report:', err);
-    }
 
     res.json({
       success: true,
@@ -689,6 +676,7 @@ export const confirmClientValidation = async (req, res, next) => {
 
     let emailChanged = false;
     let phoneChanged = false;
+    const previousEmail = client.email;
 
     if (email && email.toLowerCase() !== (client.email || '').toLowerCase()) {
       client.email = email;
@@ -705,6 +693,16 @@ export const confirmClientValidation = async (req, res, next) => {
     // Reset validation token so it's a one-time link, but keep it so they can't reuse
     client.validationToken = undefined; 
     await client.save();
+
+    // The buyer signs in with the confirmed email
+    if (emailChanged) {
+      try {
+        const { syncPortalAccount } = await import('../utils/portalAccount.js');
+        await syncPortalAccount(client, { previousEmail });
+      } catch (syncError) {
+        console.error('[CLIENT_VALIDATION] Could not update the portal account:', syncError.message);
+      }
+    }
 
     res.json({
       success: true,
