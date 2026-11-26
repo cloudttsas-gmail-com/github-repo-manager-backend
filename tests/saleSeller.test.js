@@ -71,9 +71,52 @@ describe('Selling a lot with a seller', () => {
     expect(random.statusCode).toBe(400);
   });
 
-  it('sellers do not register sales (LOTES_SALE), not even naming someone else', async () => {
+  it('a seller sells only in their own name', async () => {
     const forOther = await sell(seller.token, await newLot(3), { sellerId: otherSeller.userId });
     expect(forOther.statusCode).toBe(403);
+    const lot = await newLot(4);
+    const own = await sell(seller.token, lot, { totalValue: 30000000 });
+    expect(own.statusCode).toBe(200);
+    expect(String((await Contract.findOne({ lot: lot._id })).sellerId)).toBe(seller.userId);
+  });
+
+  it('a seller sells at the list price, dated today and without a separation nobody recorded', async () => {
+    const lot = await newLot(6);
+    const cheaper = await sell(seller.token, lot, { totalValue: 25000000 });
+    expect(cheaper.statusCode).toBe(403);
+    expect(cheaper.body.message).toMatch(/precio de lista/);
+    const backdated = await sell(seller.token, lot, { contractDate: '2025-01-15' });
+    expect(backdated.statusCode).toBe(403);
+    const declared = await sell(seller.token, lot, { separationAmount: 500000 });
+    expect(declared.statusCode).toBe(403);
+    expect((await Lot.findById(lot._id)).status).toBe('disponible');
+    // The office keeps those exceptions
+    const office = await sell(org.token, lot, { totalValue: 25000000, separationAmount: 500000 });
+    expect(office.statusCode).toBe(200);
+  });
+
+  it('a seller sells their own separation with the amount recorded, and never another seller\'s reservation', async () => {
+    const reserve = (token, lot, body) => request(app).post(`/api/lots/${lot._id}/reserve?${q()}`).set('Authorization', `Bearer ${token}`)
+      .send({ clientData: { name: `Comprador ${lot.lotNumber}`, idNumber: lot.lotNumber, phone: '3000000000' }, ...body });
+
+    const mine = await newLot(7);
+    expect((await reserve(seller.token, mine, { type: 'separado', amount: 600000 })).statusCode).toBe(200);
+    expect((await sell(seller.token, mine, { separationAmount: 500000 })).statusCode).toBe(403);
+    const sold = await sell(seller.token, mine, { separationAmount: 600000 });
+    expect(sold.statusCode).toBe(200);
+
+    const theirs = await newLot(8);
+    expect((await reserve(otherSeller.token, theirs, { type: 'apartado' })).statusCode).toBe(200);
+    const taken = await sell(seller.token, theirs, {});
+    expect(taken.statusCode).toBe(403);
+    expect(taken.body.message).toMatch(/otro asesor/);
+  });
+
+  it('changing the seller of a sale stays with the office', async () => {
+    const lot = await newLot(9);
+    await sell(org.token, lot, { sellerId: otherSeller.userId });
+    const bySeller = await request(app).post(`/api/lots/${lot._id}/assign-seller?${q()}`).set('Authorization', `Bearer ${seller.token}`).send({ sellerId: seller.userId });
+    expect(bySeller.statusCode).toBe(403);
   });
 
   it('the owner names a team member, and reassigning moves a commission nothing was filed for', async () => {

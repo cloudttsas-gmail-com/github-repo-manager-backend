@@ -144,6 +144,20 @@ describe('Inventory: reservations, sellers, filters and the lots import', () => 
     expect(res.body.message).toMatch(/no tiene correo/);
   });
 
+  it('the lots import asks for creating and editing units: the accountant imports, the collection roles and sellers do not', async () => {
+    const sheet = XLSX.utils.aoa_to_sheet([['Etapa', 'Manzana', 'Lote', 'Area'], ['Etapa Permisos', 'B', '1', 100]]);
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, 'Hoja');
+    const file = XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
+    const upload = (token) => auth(request(app).post(`/api/import/excel-lots?${q()}`), token).attach('file', file, 'lotes.xlsx');
+    for (const role of ['jefe_cartera', 'auxiliar_cartera']) {
+      const m = await member(role, `import-${role}`);
+      expect((await upload(m.token)).statusCode).toBe(403);
+    }
+    expect((await upload(seller.token)).statusCode).toBe(403);
+    expect((await upload(accountant.token)).statusCode).toBe(200);
+  });
+
   it('the lots import takes «Mz A» and «Lote 5» without repeating the label, and names missing columns as the template does', async () => {
     const template = await auth(request(app).get('/api/import/template-lots?propertyType=lotes')).buffer(true)
       .parse((res, cb) => { const chunks = []; res.on('data', (c) => chunks.push(c)); res.on('end', () => cb(null, Buffer.concat(chunks))); });

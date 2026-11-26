@@ -27,9 +27,9 @@ router.get('/logs', checkPermission(PERMISSIONS.SYSTEM_LOGS), getSystemLogs);
 
 // Other admin routes
 router.get('/all', checkPermission(PERMISSIONS.EQUIPO_VIEW), getAllUsers);
-// The seller list also feeds the sale, the reservation and the seller change: whoever sells needs it
+// The seller list also feeds the sale, the reservation and the seller change: whoever names a seller needs it
 router.get('/sellers', (req, res, next) => (
-  hasPermission(req.user.role, PERMISSIONS.LOTES_SALE)
+  hasPermission(req.user.role, PERMISSIONS.LOTES_ASSIGN_SELLER)
     ? next()
     : checkPermission(PERMISSIONS.EQUIPO_VIEW)(req, res, next)
 ), getSellers);

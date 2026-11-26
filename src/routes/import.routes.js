@@ -32,7 +32,8 @@ const upload = multer({
 router.post('/excel', protect, checkPermission(PERMISSIONS.IMPORT_MANAGE), tenantMiddleware, upload.single('file'), companyMiddleware, importExcel);
 
 // Route for Lot-only Excel import (requires company context)
-router.post('/excel-lots', protect, checkPermission(PERMISSIONS.IMPORT_MANAGE), tenantMiddleware, upload.single('file'), companyMiddleware, importLotsOnly);
+// It creates and updates units, so it asks for the same permissions as creating and editing one
+router.post('/excel-lots', protect, checkPermission(PERMISSIONS.LOTES_CREATE), checkPermission(PERMISSIONS.LOTES_EDIT), tenantMiddleware, upload.single('file'), companyMiddleware, importLotsOnly);
 
 // Route for Excel export (requires company context)
 // The whole project's buyers, contracts and quotas: only roles that may export clients
