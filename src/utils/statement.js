@@ -297,6 +297,9 @@ export const generateStatementStream = async (data, res) => {
     );
     font('Helvetica-Bold', 7, C.text);
     text(`Página ${i + 1} de ${range.count}`, R - 90, FOOTER_Y + 8, { width: 90, align: 'right' });
+    // Operix signs discreetly: the document is the inmobiliaria's
+    font('Helvetica', 6.5, C.muted);
+    text('Generado con Operix · operix.com.co', R - 160, FOOTER_Y + 19, { width: 160, align: 'right', link: 'https://operix.com.co' });
   }
 
   doc.end();

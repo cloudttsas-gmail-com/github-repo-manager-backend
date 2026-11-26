@@ -417,7 +417,7 @@ export const generateReceiptStream = async (data, res) => {
      .font('Helvetica')
      .fillColor('#9e9e9e')
      .text('Este documento es un comprobante de pago oficial emitido de manera electrónica.', 35, 740, { align: 'center', width: 542 });
-  doc.text(`Generado el ${new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })}`, { align: 'center', width: 542 });
+  doc.text(`Generado con Operix (operix.com.co) el ${new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })}`, { align: 'center', width: 542 });
 
   // ================= RENDER ATTACHMENT IF IMAGE =================
   if (paymentCapture) {
