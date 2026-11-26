@@ -185,7 +185,7 @@ describe('Integration Test - User Management (Admin)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.statusCode).toBe(400);
-    expect(res.body.message).toMatch(/cannot remove your own/i);
+    expect(res.body.message).toMatch(/no puedes eliminar tu propio usuario/i);
   });
 
   it('should delete the newly created user membership (DELETE)', async () => {

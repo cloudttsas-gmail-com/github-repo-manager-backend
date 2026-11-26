@@ -7,6 +7,7 @@ import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AuditLog from '../models/AuditLog.js';
 import { sendEmail } from '../utils/notifications.js';
 import AppError from '../utils/AppError.js';
+import { visibleEmail } from '../utils/portalAccount.js';
 import { canAssignRole, canManageMember } from '../config/permissions.js';
 
 /**
@@ -29,11 +30,12 @@ export const getAllUsers = async (req, res, next) => {
     let memberships = await User.find(query)
       .populate({
         path: 'accountId',
-        select: 'email fullName status lastLogin',
+        select: 'email fullName status lastLogin documentoIdentidad',
         match: search ? {
           $or: [
             { email: { $regex: search, $options: 'i' } },
             { fullName: { $regex: search, $options: 'i' } },
+            { documentoIdentidad: { $regex: search, $options: 'i' } },
           ],
         } : {},
       })
@@ -48,7 +50,9 @@ export const getAllUsers = async (req, res, next) => {
     const users = paginatedMemberships.map((m) => ({
       id: m._id,
       accountId: m.accountId._id,
-      email: m.accountId.email,
+      // A buyer without email has an internal placeholder; the team sees the document instead
+      email: visibleEmail(m.accountId.email),
+      ...(m.role === 'cliente' ? { cedula: m.accountId.documentoIdentidad || '' } : {}),
       fullName: m.accountId.fullName,
       role: m.role,
       status: m.status,
@@ -183,12 +187,12 @@ export const createUser = async (req, res, next) => {
       });
 
       if (existingMembership) {
-        return next(new AppError('This email already has a membership in this team', 400));
+        return next(new AppError('Ese correo ya tiene un usuario en esta inmobiliaria', 400));
       }
     } else {
       // Create new UserAccount
       if (!password || password.length < 8) {
-        return next(new AppError('Password is required and must be at least 8 characters', 400));
+        return next(new AppError('Escribe una contraseña de al menos 8 caracteres', 400));
       }
 
       account = await UserAccount.create({
@@ -251,7 +255,7 @@ export const updateUser = async (req, res, next) => {
     }).populate('accountId');
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     // Members may edit their own name, never their own role or status
@@ -312,7 +316,7 @@ export const updateUser = async (req, res, next) => {
       data: {
         user: {
           id: membership._id,
-          email: membership.accountId.email,
+          email: visibleEmail(membership.accountId.email),
           fullName: membership.accountId.fullName,
           role: membership.role,
           status: membership.status,
@@ -334,7 +338,7 @@ export const changeUserPassword = async (req, res, next) => {
     const { tenantId } = req.user;
 
     if (!password || password.length < 8) {
-      return next(new AppError('Password must be at least 8 characters', 400));
+      return next(new AppError('La contraseña debe tener al menos 8 caracteres', 400));
     }
 
     const membership = await User.findOne({
@@ -343,7 +347,7 @@ export const changeUserPassword = async (req, res, next) => {
     });
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     if (membership._id.toString() === req.user.userId?.toString()) {
@@ -356,7 +360,7 @@ export const changeUserPassword = async (req, res, next) => {
 
     const account = await UserAccount.findById(membership.accountId);
     if (!account) {
-      return next(new AppError('User account not found', 404));
+      return next(new AppError('No encontramos la cuenta de ese usuario', 404));
     }
 
     account.passwordHash = password;
@@ -364,7 +368,7 @@ export const changeUserPassword = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Password updated successfully',
+      message: 'Contraseña actualizada',
     });
   } catch (error) {
     next(error);
@@ -381,7 +385,7 @@ export const deleteUser = async (req, res, next) => {
 
     // Prevent deleting yourself
     if (membershipId === req.user.userId.toString()) {
-      return next(new AppError('You cannot remove your own membership', 400));
+      return next(new AppError('No puedes eliminar tu propio usuario', 400));
     }
 
     const membership = await User.findOne({
@@ -390,7 +394,7 @@ export const deleteUser = async (req, res, next) => {
     });
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     if (!canManageMember(req.user.role, membership.role)) {
@@ -469,12 +473,12 @@ export const updateProfile = async (req, res, next) => {
     const { accountId } = req.user;
 
     if (!fullName) {
-      return next(new AppError('Full name is required', 400));
+      return next(new AppError('Escribe tu nombre completo', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     account.fullName = fullName;
@@ -499,12 +503,12 @@ export const changeMyPassword = async (req, res, next) => {
     const { accountId } = req.user;
 
     if (!password || password.length < 8) {
-      return next(new AppError('Password must be at least 8 characters', 400));
+      return next(new AppError('La contraseña debe tener al menos 8 caracteres', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     account.passwordHash = password;
@@ -512,7 +516,7 @@ export const changeMyPassword = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Password updated successfully'
+      message: 'Contraseña actualizada'
     });
   } catch (error) {
     next(error);
@@ -528,12 +532,12 @@ export const uploadProfileImage = async (req, res, next) => {
     const file = req.file;
 
     if (!file) {
-      return next(new AppError('Please provide an image', 400));
+      return next(new AppError('Sube una imagen', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     // Delete old image if exists

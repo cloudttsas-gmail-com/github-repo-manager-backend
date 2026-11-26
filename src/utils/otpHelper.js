@@ -42,6 +42,7 @@ export const sendOTPCode = async (tenantId, companyId, clientId, type, destinati
     login: 'entrar a tu portal de cliente',
     statement: 'consultar tu estado de cuenta',
     payment: 'reportar el pago de tu inmueble',
+    password_reset: 'cambiar la contraseña de tu portal de cliente',
   };
   const emailAction = EMAIL_ACTIONS[purpose] || EMAIL_ACTIONS.payment;
 

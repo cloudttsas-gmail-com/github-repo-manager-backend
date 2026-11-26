@@ -130,9 +130,9 @@ describe('Auth hardening', () => {
       return { client, account };
     };
 
-    const makeToken = (clientId, token, code = '123456') => VerificationToken.create({
+    const makeToken = (clientId, token, code = '123456', purpose = 'login') => VerificationToken.create({
       tenantId: a.tenantId, companyId: a.companyId, clientId, token, code,
-      type: 'phone', destination: '3000000000', expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      type: 'phone', purpose, destination: '3000000000', expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
     beforeAll(async () => {

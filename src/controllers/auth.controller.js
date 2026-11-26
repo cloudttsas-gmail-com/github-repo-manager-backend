@@ -5,6 +5,7 @@ import Company from '../models/Company.js';
 import UserCompany from '../models/UserCompany.js';
 import AppError from '../utils/AppError.js';
 import crypto from 'crypto';
+import { visibleEmail, MIN_PORTAL_PASSWORD } from '../utils/portalAccount.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -67,8 +68,9 @@ const buildUserResponse = (account, membership) => {
   const tenantObj = membership.tenantId; // may be populated object or ObjectId
   return {
     id: account._id.toString(),
-    email: account.email,
+    email: visibleEmail(account.email),
     fullName: account.fullName,
+    ...(membership.role === 'cliente' ? { cedula: account.documentoIdentidad || '' } : {}),
     profileImage: account.profileImage,
     role: membership.role,
     tenantId: tenantObj?._id ? tenantObj._id.toString() : tenantObj.toString(),
@@ -91,7 +93,7 @@ export const register = async (req, res, next) => {
     // Check if account already exists
     const existingAccount = await UserAccount.findOne({ email });
     if (existingAccount) {
-      return next(new AppError('Email already registered', 400));
+      return next(new AppError('Ese correo ya está registrado', 400));
     }
 
     // 1. Create Tenant
@@ -154,6 +156,94 @@ const maskPhone = (phone) => {
   return value.length > 4 ? '*'.repeat(value.length - 4) + value.slice(-4) : value;
 };
 
+const MEMBERSHIP_TENANT_FIELDS = 'name plan status activeModules subscriptionStart subscriptionEnd';
+
+/**
+ * Send a buyer's code by WhatsApp. A person with properties in several projects has one client
+ * (and one membership) per project; the code goes to the first one with a phone, and once inside
+ * the buyer can switch project without another code.
+ */
+const sendBuyerCode = async (clientMemberships, purpose) => {
+  const Client = (await import('../models/Client.js')).default;
+  const clients = await Client.find({ _id: { $in: clientMemberships.map((m) => m.clientId) } });
+  const byId = new Map(clients.map((c) => [c._id.toString(), c]));
+  const membership = clientMemberships.find((m) => byId.get(String(m.clientId))?.phone);
+  if (!membership) {
+    throw new AppError('No tienes un celular registrado para enviarte el código. Pídele a tu inmobiliaria que lo agregue.', 400);
+  }
+  const client = byId.get(String(membership.clientId));
+
+  const { sendOTPCode } = await import('../utils/otpHelper.js');
+  const company = await Company.findById(client.companyId);
+  const { agencyName } = await import('../utils/agency.js');
+  const agency = await agencyName(company, 'Inmobiliaria');
+
+  const tenantId = membership.tenantId?._id || membership.tenantId;
+  const otpToken = await sendOTPCode(tenantId, client.companyId, client._id, 'phone', client.phone, agency, purpose);
+  return { phone: maskPhone(client.phone), otpToken };
+};
+
+/** The active buyer memberships of an account, with active tenants */
+const activeClientMemberships = async (accountId) => {
+  const memberships = await User.find({ accountId, role: 'cliente', status: 'active' })
+    .populate('tenantId', MEMBERSHIP_TENANT_FIELDS);
+  return memberships.filter((m) => m.tenantId && m.tenantId.status !== 'suspended' && m.clientId);
+};
+
+/** Verify a buyer's code for one purpose; the token burns after five wrong codes */
+const consumeBuyerCode = async (otpToken, otpCode, purpose) => {
+  if (typeof otpToken !== 'string' || !otpToken || !otpCode) {
+    throw new AppError('Escribe el código de verificación', 400);
+  }
+  const VerificationToken = (await import('../models/VerificationToken.js')).default;
+  const vToken = await VerificationToken.findOne({
+    token: otpToken,
+    purpose,
+    isUsed: false,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!vToken) throw new AppError('Código de verificación incorrecto o expirado', 400);
+  if (!codesMatch(vToken.code, otpCode)) {
+    vToken.attempts = (vToken.attempts || 0) + 1;
+    if (vToken.attempts >= MAX_OTP_ATTEMPTS) vToken.isUsed = true;
+    await vToken.save();
+    throw new AppError('Código de verificación incorrecto o expirado', 400);
+  }
+  vToken.isUsed = true;
+  await vToken.save();
+  return vToken;
+};
+
+/** Open the buyer session of one membership */
+const openBuyerSession = async (res, account, membership) => {
+  const payload = await buildTokenPayload(account, membership);
+  const accessToken = generateAccessToken(payload);
+  const refreshToken = generateRefreshToken(account._id);
+  setTokenCookies(res, accessToken, refreshToken);
+  return res.json({
+    success: true,
+    data: { user: buildUserResponse(account, membership), accessToken },
+  });
+};
+
+/** The membership and account the code was sent to */
+const buyerOfCode = async (vToken) => {
+  const membership = await User.findOne({
+    clientId: vToken.clientId,
+    tenantId: vToken.tenantId,
+    role: 'cliente',
+    status: 'active',
+  }).populate('tenantId', MEMBERSHIP_TENANT_FIELDS);
+  if (!membership || membership.tenantId?.status === 'suspended') {
+    throw new AppError('Tu acceso al portal no está activo. Pídele ayuda a tu inmobiliaria.', 401);
+  }
+  const account = await UserAccount.findById(membership.accountId);
+  if (!account || account.status !== 'active') {
+    throw new AppError('Tu acceso al portal no está activo. Pídele ayuda a tu inmobiliaria.', 401);
+  }
+  return { membership, account };
+};
+
 /**
  * POST /auth/login
  * Step 1: Verify credentials.
@@ -207,7 +297,7 @@ export const login = async (req, res, next) => {
     }
 
     if (account.status !== 'active') {
-      return next(new AppError('Account is deactivated', 401));
+      return next(new AppError('Esta cuenta está desactivada. Pídele ayuda a tu inmobiliaria.', 401));
     }
 
     // Find all active memberships
@@ -222,7 +312,7 @@ export const login = async (req, res, next) => {
     );
 
     if (activeMemberships.length === 0) {
-      return next(new AppError('No active team memberships found', 401));
+      return next(new AppError('Tu acceso no está activo. Pídele ayuda a tu inmobiliaria.', 401));
     }
 
     // Update last login
@@ -232,40 +322,19 @@ export const login = async (req, res, next) => {
     // A buyer signs in with a code sent to their phone. Another company can register a buyer with
     // the email of someone's team account, so a team membership wins in the panel login and the
     // buyer flow runs only without one, or when the client portal asks for it
-    const clientMembership = activeMemberships.find((m) => m.role === 'cliente');
+    const clientMemberships = activeMemberships.filter((m) => m.role === 'cliente');
     const teamMemberships = activeMemberships.filter((m) => m.role !== 'cliente');
-    if (clientMembership && (teamMemberships.length === 0 || req.body.portal === 'cliente')) {
-      const Client = (await import('../models/Client.js')).default;
-      const client = await Client.findById(clientMembership.clientId);
-      if (!client || !client.phone) {
-        return next(new AppError('No se encontró un número de celular registrado para enviar el código de verificación.', 400));
-      }
-
-      // Generate and send OTP
-      const { sendOTPCode } = await import('../utils/otpHelper.js');
-      const Company = (await import('../models/Company.js')).default;
-      const company = await Company.findById(client.companyId);
-      const { agencyName } = await import('../utils/agency.js');
-      const agency = await agencyName(company, 'Inmobiliaria');
-
-      const otpToken = await sendOTPCode(
-        clientMembership.tenantId._id,
-        client.companyId,
-        client._id,
-        'phone', // Satisfies VerificationToken schema validation enum
-        client.phone,
-        agency,
-        'login'
-      );
-
-      return res.json({
-        success: true,
-        data: {
-          requiresOtp: true,
-          phone: maskPhone(client.phone),
-          otpToken,
-        },
+    if (clientMemberships.length > 0 && teamMemberships.length === 0 && req.body.portal !== 'cliente') {
+      // A buyer in the company sign-in: say where to go before a code is spent
+      return res.status(403).json({
+        success: false,
+        code: 'BUYER_ACCOUNT',
+        message: 'Esta cuenta es de comprador. Entra por el portal cliente.',
       });
+    }
+    if (clientMemberships.length > 0 && req.body.portal === 'cliente') {
+      const sent = await sendBuyerCode(clientMemberships, 'login');
+      return res.json({ success: true, data: { requiresOtp: true, ...sent } });
     }
 
     if (teamMemberships.length === 1) {
@@ -322,61 +391,120 @@ const codesMatch = (expected, received) => {
 export const verifyClientOtp = async (req, res, next) => {
   try {
     const { otpCode, otpToken } = req.body;
+    // Only a sign-in code opens the portal (not one asked for a payment or a statement)
+    const vToken = await consumeBuyerCode(otpToken, otpCode, 'login');
+    const { membership, account } = await buyerOfCode(vToken);
+    return openBuyerSession(res, account, membership);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    if (typeof otpToken !== 'string' || !otpToken || !otpCode) {
-      return next(new AppError('Todos los campos son requeridos para la verificación', 400));
+/**
+ * POST /auth/client-password/request { document }
+ * A buyer who forgot the password asks for a code to the phone the company has on file.
+ */
+export const requestClientPasswordReset = async (req, res, next) => {
+  try {
+    const document = String(req.body?.document || '').trim();
+    if (!document) return next(new AppError('Escribe tu número de documento', 400));
+    const account = await UserAccount.findOne({ documentoIdentidad: document });
+    const memberships = account ? await activeClientMemberships(account._id) : [];
+    if (!account || account.status !== 'active' || memberships.length === 0) {
+      return next(new AppError('No encontramos un acceso al portal con ese documento. Pídeselo a tu inmobiliaria.', 404));
     }
+    const sent = await sendBuyerCode(memberships, 'password_reset');
+    res.json({ success: true, data: sent });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const VerificationToken = (await import('../models/VerificationToken.js')).default;
-    const vToken = await VerificationToken.findOne({
-      token: otpToken,
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
+/**
+ * POST /auth/client-password/reset { otpToken, otpCode, password }
+ * Sets the new password and opens the portal.
+ */
+export const resetClientPassword = async (req, res, next) => {
+  try {
+    const { otpToken, otpCode, password } = req.body || {};
+    if (typeof password !== 'string' || password.length < MIN_PORTAL_PASSWORD) {
+      return next(new AppError(`La contraseña debe tener al menos ${MIN_PORTAL_PASSWORD} caracteres`, 400));
+    }
+    const vToken = await consumeBuyerCode(otpToken, otpCode, 'password_reset');
+    const { membership, account } = await buyerOfCode(vToken);
+    const withPassword = await UserAccount.findById(account._id).select('+passwordHash');
+    withPassword.passwordHash = password;
+    await withPassword.save({ validateBeforeSave: false });
+    return openBuyerSession(res, account, membership);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /auth/client-projects
+ * The projects where the signed-in buyer has properties, to switch between them.
+ */
+export const getClientProjects = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'cliente') return next(new AppError('Solo para compradores', 403));
+    const memberships = await activeClientMemberships(req.user.accountId);
+    const Client = (await import('../models/Client.js')).default;
+    const clients = await Client.find({ _id: { $in: memberships.map((m) => m.clientId) } })
+      .select('companyId').populate('companyId', 'name');
+    const projects = clients.map((c) => {
+      const membership = memberships.find((m) => String(m.clientId) === c._id.toString());
+      return {
+        clientId: c._id.toString(),
+        projectName: c.companyId?.name || '',
+        tenantName: membership?.tenantId?.name || '',
+        current: c._id.toString() === String(req.user.clientId),
+      };
     });
+    res.json({ success: true, data: { projects } });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    if (!vToken) {
-      return next(new AppError('Código de verificación incorrecto o expirado', 400));
-    }
-
-    if (!codesMatch(vToken.code, otpCode)) {
-      vToken.attempts = (vToken.attempts || 0) + 1;
-      if (vToken.attempts >= MAX_OTP_ATTEMPTS) vToken.isUsed = true;
-      await vToken.save();
-      return next(new AppError('Código de verificación incorrecto o expirado', 400));
-    }
-
-    vToken.isUsed = true;
-    await vToken.save();
-
-    const membership = await User.findOne({
-      clientId: vToken.clientId,
-      tenantId: vToken.tenantId,
-      role: 'cliente',
-      status: 'active',
-    }).populate('tenantId', 'name plan status activeModules subscriptionStart subscriptionEnd');
-
-    if (!membership || membership.tenantId?.status === 'suspended') {
-      return next(new AppError('Membresía no encontrada o inactiva', 401));
-    }
-
-    const account = await UserAccount.findById(membership.accountId);
+/**
+ * POST /auth/switch-client { clientId }
+ * Opens another project of the same buyer account (already verified by its code).
+ */
+export const switchClient = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'cliente') return next(new AppError('Solo para compradores', 403));
+    const memberships = await activeClientMemberships(req.user.accountId);
+    const membership = memberships.find((m) => String(m.clientId) === String(req.body?.clientId));
+    if (!membership) return next(new AppError('No tienes inmuebles en ese proyecto', 404));
+    const account = await UserAccount.findById(req.user.accountId);
     if (!account || account.status !== 'active') {
-      return next(new AppError('Cuenta no encontrada o inactiva', 401));
+      return next(new AppError('Tu acceso al portal no está activo. Pídele ayuda a tu inmobiliaria.', 401));
     }
+    return openBuyerSession(res, account, membership);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const payload = await buildTokenPayload(account, membership);
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(account._id);
-
-    setTokenCookies(res, accessToken, refreshToken);
-
-    return res.json({
-      success: true,
-      data: {
-        user: buildUserResponse(account, membership),
-        accessToken,
-      },
-    });
+/**
+ * PUT /auth/client-password { currentPassword, password }
+ * The buyer changes the password from Mi perfil.
+ */
+export const changeClientPassword = async (req, res, next) => {
+  try {
+    if (req.user.role !== 'cliente') return next(new AppError('Solo para compradores', 403));
+    const { currentPassword, password } = req.body || {};
+    if (typeof password !== 'string' || password.length < MIN_PORTAL_PASSWORD) {
+      return next(new AppError(`La contraseña nueva debe tener al menos ${MIN_PORTAL_PASSWORD} caracteres`, 400));
+    }
+    const account = await UserAccount.findById(req.user.accountId).select('+passwordHash');
+    if (!account || !(await account.comparePassword(String(currentPassword || '')))) {
+      return next(new AppError('La contraseña actual no es correcta', 400));
+    }
+    account.passwordHash = password;
+    await account.save({ validateBeforeSave: false });
+    res.json({ success: true, message: 'Contraseña actualizada' });
   } catch (error) {
     next(error);
   }
@@ -392,7 +520,7 @@ export const selectTenant = async (req, res, next) => {
     const { selectionToken, tenantId } = req.body;
 
     if (!selectionToken || !tenantId) {
-      return next(new AppError('selectionToken and tenantId are required', 400));
+      return next(new AppError('Elige con qué inmobiliaria quieres entrar', 400));
     }
 
     let accountId;
@@ -404,7 +532,7 @@ export const selectTenant = async (req, res, next) => {
 
     const account = await UserAccount.findById(accountId);
     if (!account || account.status !== 'active') {
-      return next(new AppError('Account not found or inactive', 401));
+      return next(new AppError('Tu cuenta no está activa. Inicia sesión de nuevo.', 401));
     }
 
     // A buyer membership never opens without its phone code
@@ -416,11 +544,11 @@ export const selectTenant = async (req, res, next) => {
     }).populate('tenantId', 'name plan status activeModules subscriptionStart subscriptionEnd');
 
     if (!membership) {
-      return next(new AppError('No active membership for this tenant', 401));
+      return next(new AppError('No tienes acceso activo a esa inmobiliaria', 401));
     }
 
     if (membership.tenantId.status === 'suspended') {
-      return next(new AppError('This team is suspended', 403));
+      return next(new AppError('Esta inmobiliaria está suspendida', 403));
     }
 
     const payload = await buildTokenPayload(account, membership);
@@ -450,7 +578,7 @@ export const logout = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Logged out successfully',
+      message: 'Sesión cerrada',
     });
   } catch (error) {
     next(error);
@@ -487,6 +615,7 @@ export const getMe = async (req, res, next) => {
       data: {
         user: {
           ...account.toJSON(),
+          email: visibleEmail(account.email),
           role: req.user.role,
           tenantId: req.user.tenantId,
           tenantName: tenant?.name,
@@ -508,7 +637,7 @@ export const refreshTokenHandler = async (req, res, next) => {
     const token = req.cookies.refreshToken;
 
     if (!token) {
-      return next(new AppError('No refresh token provided', 401));
+      return next(new AppError('Tu sesión venció. Inicia sesión de nuevo.', 401));
     }
 
     const decoded = verifyRefreshToken(token);
@@ -516,7 +645,7 @@ export const refreshTokenHandler = async (req, res, next) => {
     const account = await UserAccount.findById(decoded.accountId);
 
     if (!account || account.status !== 'active') {
-      return next(new AppError('Account not found or inactive', 401));
+      return next(new AppError('Tu cuenta no está activa. Inicia sesión de nuevo.', 401));
     }
 
     // Find the most recent active membership
@@ -526,7 +655,7 @@ export const refreshTokenHandler = async (req, res, next) => {
     }).sort({ updatedAt: -1 });
 
     if (!membership) {
-      return next(new AppError('No active membership found', 401));
+      return next(new AppError('No tienes un acceso activo', 401));
     }
 
     const payload = await buildTokenPayload(account, membership);
@@ -541,6 +670,6 @@ export const refreshTokenHandler = async (req, res, next) => {
     });
   } catch (error) {
     clearTokenCookies(res);
-    next(new AppError('Invalid refresh token', 401));
+    next(new AppError('Tu sesión venció. Inicia sesión de nuevo.', 401));
   }
 };
