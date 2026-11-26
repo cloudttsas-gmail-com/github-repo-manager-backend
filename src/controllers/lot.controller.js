@@ -126,6 +126,8 @@ export const getLots = async (req, res, next) => {
       status,
       manzana,
       stage,
+      tower,
+      floor,
       sellerId,
       minArea,
       maxArea,
@@ -156,6 +158,13 @@ export const getLots = async (req, res, next) => {
     }
     if (stage) {
       query.stage = { $regex: escapeRegex(String(stage).trim()), $options: 'i' };
+    }
+    if (tower) {
+      query.tower = { $regex: escapeRegex(String(tower).trim()), $options: 'i' };
+    }
+    if (floor) {
+      // Floor 1 must not bring 10 or 11; «Piso 1» counts as 1
+      query.floor = { $regex: `^(?:piso\\s*)?${escapeRegex(String(floor).trim())}$`, $options: 'i' };
     }
     // Apartados and separados about to be released (the Pendientes row links here with 3 days)
     const expiring = parseInt(expiresWithinDays, 10);
@@ -192,6 +201,8 @@ export const getLots = async (req, res, next) => {
           { nomenclature: { $regex: escapeRegex(search), $options: 'i' } },
           { lotNumber: { $regex: escapeRegex(search), $options: 'i' } },
           { reference: { $regex: escapeRegex(search), $options: 'i' } },
+          { tower: { $regex: escapeRegex(search), $options: 'i' } },
+          { floor: { $regex: escapeRegex(search), $options: 'i' } },
         ],
       };
 
@@ -966,8 +977,8 @@ export const reserveLot = async (req, res, next) => {
   try {
 
     const { id } = req.params;
-    const { tenantId, companyId, userId } = req.user;
-    const { type, clientId, clientData, observations, amount, expirationDays } = req.body;
+    const { tenantId, companyId, userId, role } = req.user;
+    const { type, clientId, clientData, observations, amount, expirationDays, sellerId } = req.body;
 
     if (!['apartado', 'separado'].includes(type)) {
       return res.status(400).json({ success: false, message: 'Tipo de reserva inválido' });
@@ -995,6 +1006,23 @@ export const reserveLot = async (req, res, next) => {
       });
     }
 
+    // The seller of a reservation is the one the form names, not whoever registers it:
+    // a seller reserves for themselves; anyone else may name an active member of this team
+    const isSellerRole = ['vendedor', 'ejecutivo_comercial', 'agent'].includes(role);
+    if (isSellerRole && sellerId && String(sellerId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Solo puedes registrar reservas a tu nombre' });
+    }
+    let reservationSellerId = isSellerRole ? userId : (sellerId || null);
+    if (reservationSellerId && !isSellerRole) {
+      const User = (await import('../models/User.js')).default;
+      const seller = mongoose.isValidObjectId(reservationSellerId)
+        ? await User.exists({ _id: reservationSellerId, tenantId, status: 'active', role: { $ne: 'cliente' } })
+        : null;
+      if (!seller) return res.status(400).json({ success: false, message: 'El asesor seleccionado no es del equipo' });
+    }
+    // Turning a separation into an apartado keeps its seller unless the form names another
+    if (isUpgrade && !reservationSellerId) reservationSellerId = lot.sellerId || null;
+
     // 1. Get or Create Client
     let client;
     if (clientId) {
@@ -1012,9 +1040,9 @@ export const reserveLot = async (req, res, next) => {
     }
 
     // 2. Separate logic for 'separado' (min $500,000)
+    const paidAmount = parseFloat(amount) || 0;
     if (type === 'separado') {
       const minAmount = 500000;
-      const paidAmount = parseFloat(amount) || 0;
       if (paidAmount < minAmount) {
         return res.status(400).json({ 
           success: false, 
@@ -1039,14 +1067,17 @@ export const reserveLot = async (req, res, next) => {
     lot.expiresAt = expiresAt;
     lot.reservationBy = client._id;
     lot.reservationDetails = observations;
-    lot.sellerId = userId;
+    // The separation payment is kept so the sale discounts the real amount; an upgrade keeps it
+    if (type === 'separado') lot.reservationAmount = paidAmount;
+    else if (!isUpgrade) lot.reservationAmount = undefined;
+    lot.sellerId = reservationSellerId || undefined;
     await lot.save();
 
     await logAudit(req, {
       action: `RESERVE_LOT_${type.toUpperCase()}`,
       module: 'LOTS',
       targetId: lot._id,
-      details: { clientId: client._id, type, amount }
+      details: { clientId: client._id, type, amount, sellerId: reservationSellerId }
     });
 
     res.status(200).json({
@@ -1083,6 +1114,7 @@ export const releaseLot = async (req, res, next) => {
     lot.expiresAt = undefined;
     lot.reservationBy = undefined;
     lot.reservationDetails = undefined;
+    lot.reservationAmount = undefined;
     lot.sellerId = undefined;
     await lot.save();
 

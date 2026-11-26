@@ -63,6 +63,10 @@ const lotSchema = new mongoose.Schema({
   reservationDetails: {
     type: String,
   },
+  // What the buyer paid to hold a 'separado' lot; the sale discounts it from the initial quota
+  reservationAmount: {
+    type: Number,
+  },
   sellerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

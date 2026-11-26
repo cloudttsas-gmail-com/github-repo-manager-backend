@@ -581,8 +581,19 @@ router.post('/resend-plan/:contractId', companyMiddleware, checkPermission(PERMI
 
     const quotas = await Quota.find({ contract: contractId, tenantId, companyId }).sort({ type: 1, number: 1 });
 
+    // The plan only goes by email: say so instead of answering «enviado» when nothing left
+    if (!client.email) {
+      return res.status(400).json({ success: false, message: 'El cliente no tiene correo registrado: agrégalo para enviarle el plan de pagos' });
+    }
+    if (quotas.length === 0) {
+      return res.status(400).json({ success: false, message: 'Este contrato todavía no tiene cuotas: estructura el plan antes de enviarlo' });
+    }
+
     const { sendPaymentPlanEmail } = await import('../utils/clientAuthHelper.js');
-    await sendPaymentPlanEmail(client, quotas, contract, companyId);
+    const delivery = await sendPaymentPlanEmail(client, quotas, contract, companyId);
+    if (!delivery?.sent) {
+      return res.status(502).json({ success: false, message: 'No se pudo enviar el correo con el plan de pagos. Inténtalo de nuevo en unos minutos' });
+    }
 
     await logAudit(req, {
       action: 'RESEND_PAYMENT_PLAN',
@@ -591,7 +602,7 @@ router.post('/resend-plan/:contractId', companyMiddleware, checkPermission(PERMI
       details: { clientId: client._id }
     });
 
-    res.json({ success: true, message: 'Plan de pagos enviado exitosamente al correo del cliente' });
+    res.json({ success: true, message: `Plan de pagos enviado al correo ${client.email}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

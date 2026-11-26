@@ -212,8 +212,10 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
  * Sends a separate email containing the client's payment plan.
  */
 // updateReason: why an already sent plan changed (e.g. the initial was paid or an otrosí); empty on the first plan
+// Says whether the email left: { sent, reason } (reason: 'no_email', 'no_quotas' or 'send_failed')
 export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, updateReason = '') => {
-  if (!client.email || !quotas || quotas.length === 0) return;
+  if (!client.email) return { sent: false, reason: 'no_email' };
+  if (!quotas || quotas.length === 0) return { sent: false, reason: 'no_quotas' };
   
   try {
     const company = await Company.findById(companyId);
@@ -285,10 +287,13 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
       </div>
     `;
 
-    await sendEmail(client.email, subject, emailHtml);
+    const result = await sendEmail(client.email, subject, emailHtml);
+    if (result && result.success === false) return { sent: false, reason: 'send_failed' };
     console.log(`[CLIENT_AUTH_HELPER] Payment plan email sent to: ${client.email}`);
+    return { sent: true };
   } catch (error) {
     console.error('[CLIENT_AUTH_HELPER] Error sending payment plan email:', error);
+    return { sent: false, reason: 'send_failed' };
   }
 };
 

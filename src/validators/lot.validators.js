@@ -12,6 +12,10 @@ export const reserveLotValidation = z.object({
       .regex(/^[0-9a-fA-F]{24}$/, 'ID de cliente inválido')
       .optional(),
     clientData: z.record(z.string(), z.any()).optional(),
+    sellerId: z.string()
+      .regex(/^[0-9a-fA-F]{24}$/, 'Asesor inválido')
+      .optional()
+      .or(z.literal('')),
     amount: z.coerce.number({ invalid_type_error: 'El monto debe ser un número' })
       .optional(),
     expirationDays: z.coerce.number({ invalid_type_error: 'Los días de expiración deben ser un número' })

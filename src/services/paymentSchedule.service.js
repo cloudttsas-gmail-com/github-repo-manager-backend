@@ -3,6 +3,7 @@ import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
 import PaymentAttempt from '../models/PaymentAttempt.js';
 import AppError from '../utils/AppError.js';
+import { toCalendarDate, fromCalendarDate, addMonthsClamped } from './paymentPlanRules.js';
 
 const MAX_QUOTAS = 600;
 
@@ -328,7 +329,12 @@ export async function generateContractSchedule({
     const paidIds = paidOrPartialQuotas.map(q => q._id);
     await Quota.deleteMany({ contract: contractId, tenantId, companyId, _id: { $nin: paidIds } }).session(session);
 
-    const baseStartDate = startDate ? new Date(startDate) : (contract.startDate || new Date());
+    // Due dates as in a sale: the chosen day each month, or the month's last day when it has
+    // no such day (30 in February), never a fixed 28
+    const baseCalendar = toCalendarDate(startDate || contract.startDate || new Date());
+    const dueDateAt = (monthOffset) => fromCalendarDate(
+      addMonthsClamped(baseCalendar, monthOffset, paymentDay ? Number(paymentDay) : baseCalendar.d),
+    );
     const quotasToInsert = [];
 
     // 1. Initial quotas if specified
@@ -337,9 +343,7 @@ export async function generateContractSchedule({
         const existingPaid = paidOrPartialQuotas.find(q => q.type === 'inicial' && q.number === i);
         if (existingPaid) continue;
 
-        const dueDate = new Date(baseStartDate);
-        dueDate.setMonth(dueDate.getMonth() + (i - 1));
-        if (paymentDay) dueDate.setDate(Math.min(paymentDay, 28));
+        const dueDate = dueDateAt(i - 1);
 
         quotasToInsert.push({
           tenantId,
@@ -360,9 +364,7 @@ export async function generateContractSchedule({
       const existingPaid = paidOrPartialQuotas.find(q => q.type === 'normal' && q.number === i);
       if (existingPaid) continue;
 
-      const dueDate = new Date(baseStartDate);
-      dueDate.setMonth(dueDate.getMonth() + (initialQuotasCount || 0) + (i - 1));
-      if (paymentDay) dueDate.setDate(Math.min(paymentDay, 28));
+      const dueDate = dueDateAt((initialQuotasCount || 0) + (i - 1));
 
       let qVal = parsedInstallmentValue;
       // If balloonInterval is provided and i is a multiple of balloonInterval
@@ -381,6 +383,25 @@ export async function generateContractSchedule({
         status: 'pendiente',
         amountPaid: 0
       });
+    }
+
+    // The kept quotas (with payments) keep their value, so the new ones must cover the rest:
+    // the plan has to add up to the contract value. A rounding difference goes to the last new quota
+    const keptTotal = paidOrPartialQuotas.reduce((acc, q) => acc + (Number(q.value) || 0), 0);
+    const newTotal = quotasToInsert.reduce((acc, q) => acc + q.value, 0);
+    const difference = keptTotal + newTotal - parsedTotalValue;
+    const roundingTolerance = Math.max(100, quotasToInsert.length);
+    const lastNew = [...quotasToInsert].reverse().find((q) => q.value - difference > 0);
+    if (Math.abs(difference) >= 1) {
+      if (Math.abs(difference) <= roundingTolerance && lastNew) {
+        lastNew.value -= difference;
+      } else {
+        const money = (v) => `$${Math.round(v).toLocaleString('es-CO')}`;
+        const kept = paidOrPartialQuotas.length > 0
+          ? ` (${paidOrPartialQuotas.length} ${paidOrPartialQuotas.length === 1 ? 'cuota con pagos conserva' : 'cuotas con pagos conservan'} su valor: ${money(keptTotal)})`
+          : '';
+        throw new AppError(`El plan suma ${money(keptTotal + newTotal)}${kept} y el contrato vale ${money(parsedTotalValue)}: ajusta el valor de las cuotas hasta que cuadre`, 400);
+      }
     }
 
     if (quotasToInsert.length > 0) {
