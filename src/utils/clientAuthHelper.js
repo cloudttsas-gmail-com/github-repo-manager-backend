@@ -212,20 +212,22 @@ export const registerPortalUserForClient = async (client, tenantId, companyId, p
  * Sends a separate email containing the client's payment plan.
  */
 // updateReason: why an already sent plan changed (e.g. the initial was paid or an otrosí); empty on the first plan
+// Says whether the email left and whether the WhatsApp was queued: { sent, reason, whatsapp } (reason: 'no_email', 'no_quotas' or 'send_failed')
 export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, updateReason = '') => {
-  if (!quotas || quotas.length === 0) return;
+  if (!quotas || quotas.length === 0) return { sent: false, reason: 'no_quotas', whatsapp: false };
 
   // By WhatsApp too, with the PDF (operix_plan_pagos / operix_plan_actualizado), inside the contact hours
+  let whatsapp = false;
   if (client.phone) {
     try {
       const company = await Company.findById(companyId);
       const { queuePaymentPlanNotice } = await import('../services/automaticNotices.service.js');
-      await queuePaymentPlanNotice({ company, client, contract, quotas, updateReason });
+      whatsapp = Boolean(await queuePaymentPlanNotice({ company, client, contract, quotas, updateReason }));
     } catch (error) {
       console.error('[CLIENT_AUTH_HELPER] Error queuing the payment plan WhatsApp:', error.message);
     }
   }
-  if (!client.email) return;
+  if (!client.email) return { sent: false, reason: 'no_email', whatsapp };
 
   try {
     const company = await Company.findById(companyId);
@@ -297,10 +299,13 @@ export const sendPaymentPlanEmail = async (client, quotas, contract, companyId, 
       </div>
     `;
 
-    await sendEmail(client.email, subject, emailHtml);
+    const result = await sendEmail(client.email, subject, emailHtml);
+    if (result && result.success === false) return { sent: false, reason: 'send_failed', whatsapp };
     console.log(`[CLIENT_AUTH_HELPER] Payment plan email sent to: ${client.email}`);
+    return { sent: true, whatsapp };
   } catch (error) {
     console.error('[CLIENT_AUTH_HELPER] Error sending payment plan email:', error);
+    return { sent: false, reason: 'send_failed', whatsapp };
   }
 };
 

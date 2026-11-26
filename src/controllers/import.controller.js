@@ -5,7 +5,7 @@ import Lot from '../models/Lot.js';
 import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
 import Company from '../models/Company.js';
-import { buildUnitKey, buildNomenclature, missingIdentityFields, normalizePropertyType } from '../utils/propertyIdentifier.js';
+import { buildUnitKey, buildNomenclature, missingIdentityFields, normalizePropertyType, stripFieldPrefix, identityFieldLabel } from '../utils/propertyIdentifier.js';
 import { parseNumStringWithLocalization } from '../utils/math.js';
 import { parseExcelDate, formatDateSmall } from '../utils/date.js';
 
@@ -809,11 +809,11 @@ export const downloadLotsOnlyTemplate = async (req, res) => {
     switch (propertyType) {
       case 'apartamentos':
         headers = ['Etapa', 'Torre', 'Piso', 'Apartamento', 'Area', 'Valor Metro Cuadrado'];
-        row = ['Etapa 1', 'Torre A', '3', '301', 65, 4500000];
+        row = ['Etapa 1', 'A', '3', '301', 65, 4500000];
         break;
       case 'casas':
         headers = ['Etapa', 'Manzana', 'Casa', 'Area', 'Valor Metro Cuadrado'];
-        row = ['Etapa 1', 'Mz A', 'Casa 5', 120, 3750000];
+        row = ['Etapa 1', 'A', '5', 120, 3750000];
         break;
       case 'locales':
         headers = ['Etapa', 'Local', 'Area', 'Valor Metro Cuadrado'];
@@ -821,7 +821,7 @@ export const downloadLotsOnlyTemplate = async (req, res) => {
         break;
       default: // lotes
         headers = ['Etapa', 'Manzana', 'Lote', 'Area', 'Valor Metro Cuadrado'];
-        row = ['Etapa 1', 'Mz A', 'Lote 5', 120, 375000];
+        row = ['Etapa 1', 'A', '5', 120, 375000];
         break;
     }
     
@@ -958,15 +958,17 @@ export const importLotsOnly = async (req, res) => {
         }
 
         const stage = getValMulti(row, 'Etapa', 'stage', 'etapa', 'Etapa (Stage)')?.toString().trim() || 'Desconocida';
-        const manzana = getValMulti(row, 'Manzana', 'block', 'manzana', 'Manzana (Block)')?.toString().trim() || '';
-        const lotNumber = getValMulti(row, 'Lote', 'lote', 'lot', 'lotNumber', 'Número de lote', 'Número', 'Apartamento', 'Local', 'Casa')?.toString().trim();
-        const tower = getValMulti(row, 'Torre', 'tower')?.toString().trim() || '';
-        const floor = getValMulti(row, 'Piso', 'floor')?.toString().trim() || '';
+        // «Mz A» or «Lote 5» in the cell keep only «A» and «5»: the label is added when shown
+        const manzana = stripFieldPrefix(getValMulti(row, 'Manzana', 'block', 'manzana', 'Manzana (Block)'), 'manzana');
+        const lotNumber = stripFieldPrefix(getValMulti(row, 'Lote', 'lote', 'lot', 'lotNumber', 'Número de lote', 'Número', 'Apartamento', 'Local', 'Casa'), 'unit') || undefined;
+        const tower = stripFieldPrefix(getValMulti(row, 'Torre', 'tower'), 'tower');
+        const floor = stripFieldPrefix(getValMulti(row, 'Piso', 'floor'), 'floor');
 
         const identity = { stage, manzana, tower, floor, lotNumber };
         const missing = missingIdentityFields(companyPropertyType, identity);
         if (!lotNumber || missing.length > 0) {
-          errors.push(`Fila ${rowNum}: faltan campos obligatorios (${missing.length > 0 ? missing.join(', ') : 'lotNumber'}).`);
+          const missingLabels = (missing.length > 0 ? missing : ['lotNumber']).map((f) => identityFieldLabel(companyPropertyType, f));
+          errors.push(`Fila ${rowNum}: faltan columnas obligatorias (${missingLabels.join(', ')}).`);
           summary.rowsSkipped++;
           summary.rowsProcessed++;
           continue;
@@ -989,7 +991,7 @@ export const importLotsOnly = async (req, res) => {
 
         const unitKey = buildUnitKey(companyPropertyType, identity);
         if (seenUnitKeys.has(unitKey)) {
-          errors.push(`Fila ${rowNum}: duplicado en el archivo, ya aparece en la fila ${seenUnitKeys.get(unitKey)} (${unitKey}).`);
+          errors.push(`Fila ${rowNum}: duplicado en el archivo, ya aparece en la fila ${seenUnitKeys.get(unitKey)} (${buildNomenclature(companyPropertyType, identity)}).`);
           summary.duplicatesInFile++;
           summary.rowsProcessed++;
           continue;

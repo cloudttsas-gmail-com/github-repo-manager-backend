@@ -47,6 +47,9 @@ export const checkLotExpirations = async (tenantId, companyId) => {
       lot.expiresAt = undefined;
       lot.reservationBy = undefined;
       lot.reservationDetails = undefined;
+      lot.reservationAmount = undefined;
+      // The seller came with the reservation: an available lot belongs to nobody
+      lot.sellerId = undefined;
       await lot.save();
 
       // Log the automatic release

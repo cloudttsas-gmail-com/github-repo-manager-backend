@@ -12,7 +12,7 @@ import {
   getSystemLogs,
 } from '../controllers/admin.controller.js';
 import { protect, checkPermission } from '../middleware/auth.js';
-import { PERMISSIONS } from '../config/permissions.js';
+import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
 import upload from '../middleware/upload.js';
 
@@ -27,7 +27,12 @@ router.get('/logs', checkPermission(PERMISSIONS.SYSTEM_LOGS), getSystemLogs);
 
 // Other admin routes
 router.get('/all', checkPermission(PERMISSIONS.EQUIPO_VIEW), getAllUsers);
-router.get('/sellers', checkPermission(PERMISSIONS.EQUIPO_VIEW), getSellers);
+// The seller list also feeds the sale, the reservation and the seller change: whoever names a seller needs it
+router.get('/sellers', (req, res, next) => (
+  hasPermission(req.user.role, PERMISSIONS.LOTES_ASSIGN_SELLER)
+    ? next()
+    : checkPermission(PERMISSIONS.EQUIPO_VIEW)(req, res, next)
+), getSellers);
 router.post('/create', checkPermission(PERMISSIONS.EQUIPO_MANAGE), createUser);
 router.put('/update/:id', checkPermission(PERMISSIONS.EQUIPO_MANAGE), updateUser);
 router.put('/change-password/:id', checkPermission(PERMISSIONS.EQUIPO_MANAGE), changeUserPassword);

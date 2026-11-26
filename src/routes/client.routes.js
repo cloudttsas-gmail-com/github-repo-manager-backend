@@ -591,8 +591,22 @@ router.post('/resend-plan/:contractId', companyMiddleware, checkPermission(PERMI
 
     const quotas = await Quota.find({ contract: contractId, tenantId, companyId }).sort({ type: 1, number: 1 });
 
+    // The plan goes by email and, when the project has WhatsApp connected, by WhatsApp: say what left instead of answering «enviado» when nothing did
+    if (quotas.length === 0) {
+      return res.status(400).json({ success: false, message: 'Este contrato todavía no tiene cuotas: estructura el plan antes de enviarlo' });
+    }
+    if (!client.email && !client.phone) {
+      return res.status(400).json({ success: false, message: 'El cliente no tiene correo ni celular registrado: agrega uno para enviarle el plan de pagos' });
+    }
+
     const { sendPaymentPlanEmail } = await import('../utils/clientAuthHelper.js');
-    await sendPaymentPlanEmail(client, quotas, contract, companyId);
+    const delivery = await sendPaymentPlanEmail(client, quotas, contract, companyId);
+    if (!delivery?.sent && !delivery?.whatsapp) {
+      if (delivery?.reason === 'no_email') {
+        return res.status(400).json({ success: false, message: 'El cliente no tiene correo registrado y el proyecto no tiene WhatsApp conectado: agrega su correo para enviarle el plan de pagos' });
+      }
+      return res.status(502).json({ success: false, message: 'No se pudo enviar el correo con el plan de pagos. Inténtalo de nuevo en unos minutos' });
+    }
 
     await logAudit(req, {
       action: 'RESEND_PAYMENT_PLAN',
@@ -601,7 +615,12 @@ router.post('/resend-plan/:contractId', companyMiddleware, checkPermission(PERMI
       details: { clientId: client._id }
     });
 
-    res.json({ success: true, message: 'Plan de pagos enviado exitosamente al correo del cliente' });
+    const channels = [
+      delivery.sent ? `al correo ${client.email}` : '',
+      delivery.whatsapp ? 'por WhatsApp (sale en el horario de contacto)' : '',
+    ].filter(Boolean).join(' y ');
+    const emailFailed = client.email && !delivery.sent ? '. El correo no salió: inténtalo de nuevo en unos minutos' : '';
+    res.json({ success: true, message: `Plan de pagos enviado ${channels}${emailFailed}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

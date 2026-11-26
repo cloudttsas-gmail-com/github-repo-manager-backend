@@ -72,7 +72,7 @@ router.post('/:id/release',
 // Carga histórica: vincular asesor a contratos/lotes ya vendidos
 router.post('/:id/assign-seller', 
   companyMiddleware, 
-  checkPermission(PERMISSIONS.LOTES_SALE), 
+  checkPermission(PERMISSIONS.LOTES_ASSIGN_SELLER), 
   assignLotSeller
 );
 

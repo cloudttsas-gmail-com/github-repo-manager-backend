@@ -103,6 +103,35 @@ describe('Generating and restructuring a payment plan never loses payments', () 
     expect((await generate(planBody(contract._id, { initialQuotasCount: 1, initialQuotaValue: -5 }))).statusCode).toBe(400);
   });
 
+  it('generate keeps day 30 (the last day in February), as a sale does', async () => {
+    const { contract } = await contractWithPaidQuota();
+    const res = await generate(planBody(contract._id, { startDate: '2027-01-30', paymentDay: 30 }));
+    expect(res.statusCode).toBe(200);
+    const fresh = await Quota.find({ contract: contract._id, number: { $in: [2, 3] } }).sort({ number: 1 });
+    const bogota = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+    // Quota 1 is paid and kept; quota 2 falls in February (28 days in 2027) and quota 3 on 30 March
+    expect(fresh.map((q) => bogota(q.dueDate))).toEqual(['2027-02-28', '2027-03-30']);
+  });
+
+  it('generate refuses a plan whose new quotas ignore what the kept quotas are worth', async () => {
+    const { contract } = await contractWithPaidQuota();
+    // 3 quotas of 900,000 would add up to 2,800,000 with the paid 1,000,000 one
+    const res = await generate(planBody(contract._id, { installmentValue: 900000 }));
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toMatch(/conserva su valor/);
+    expect(await Quota.countDocuments({ contract: contract._id })).toBe(3);
+    expect((await Quota.find({ contract: contract._id })).every((q) => q.value === 1000000)).toBe(true);
+  });
+
+  it('generate absorbs a rounding difference in the last new quota', async () => {
+    const { contract } = await contractWithPaidQuota();
+    await Contract.updateOne({ _id: contract._id }, { totalValue: 3000001 });
+    const res = await generate(planBody(contract._id, { totalValue: 3000001 }));
+    expect(res.statusCode).toBe(200);
+    const values = (await Quota.find({ contract: contract._id }).sort({ number: 1 })).map((q) => q.value);
+    expect(values).toEqual([1000000, 1000000, 1000001]);
+  });
+
   it('restructure only touches the quotas of its own contract', async () => {
     const mine = await contractWithPaidQuota();
     const other = await contractWithPaidQuota();

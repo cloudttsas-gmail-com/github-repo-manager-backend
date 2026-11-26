@@ -53,6 +53,21 @@ export function normalizeValue(value, field = 'unit') {
   return result;
 }
 
+/**
+ * Removes a leading label the person already typed («Mz A» → «A», «Lote 5» → «5»),
+ * keeping the rest as written, so the nomenclature does not say «Mz Mz A».
+ */
+export function stripFieldPrefix(value, field = 'unit') {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  const prefixes = PREFIXES[field] || [];
+  for (const prefix of prefixes) {
+    const match = text.match(new RegExp(`^${prefix}\\.?[\\s\\-_./]+(?=\\S)`, 'i'));
+    if (match) return text.slice(match[0].length).trim();
+  }
+  return text;
+}
+
 export function buildUnitKey(propertyType, data = {}, options = {}) {
   const type = normalizePropertyType(propertyType);
   const includeFloor = options.includeFloorForApartments === true;
@@ -84,11 +99,11 @@ export function buildUnitKey(propertyType, data = {}, options = {}) {
 export function buildNomenclature(propertyType, data = {}) {
   const type = normalizePropertyType(propertyType);
   const stage = data.stage ? String(data.stage).trim() : '';
-  const manzana = data.manzana ? String(data.manzana).trim() : '';
-  const tower = data.tower ? String(data.tower).trim() : '';
-  const floor = data.floor ? String(data.floor).trim() : '';
+  const manzana = stripFieldPrefix(data.manzana, 'manzana');
+  const tower = stripFieldPrefix(data.tower, 'tower');
+  const floor = stripFieldPrefix(data.floor, 'floor');
   const unitRaw = data.unitNumber !== undefined ? data.unitNumber : data.lotNumber;
-  const unit = unitRaw ? String(unitRaw).trim() : '';
+  const unit = stripFieldPrefix(unitRaw, 'unit');
 
   const parts = [];
   if (stage) parts.push(stage);
@@ -122,4 +137,18 @@ export function missingIdentityFields(propertyType, data = {}) {
   const unitRaw = data.unitNumber !== undefined ? data.unitNumber : data.lotNumber;
   if (!normalizeValue(unitRaw, 'unit')) missing.push('lotNumber');
   return missing;
+}
+
+/** Column names of the import template, for the messages people read */
+const FIELD_LABELS = {
+  stage: () => 'Etapa',
+  manzana: () => 'Manzana',
+  tower: () => 'Torre',
+  floor: () => 'Piso',
+  lotNumber: (type) => ({ casas: 'Casa', apartamentos: 'Apartamento', locales: 'Local' }[type] || 'Lote'),
+};
+
+export function identityFieldLabel(propertyType, field) {
+  const type = normalizePropertyType(propertyType);
+  return FIELD_LABELS[field] ? FIELD_LABELS[field](type) : field;
 }
