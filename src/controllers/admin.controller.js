@@ -316,7 +316,7 @@ export const updateUser = async (req, res, next) => {
       data: {
         user: {
           id: membership._id,
-          email: membership.accountId.email,
+          email: visibleEmail(membership.accountId.email),
           fullName: membership.accountId.fullName,
           role: membership.role,
           status: membership.status,
