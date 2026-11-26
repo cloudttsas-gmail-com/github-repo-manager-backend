@@ -77,31 +77,54 @@ export const generateStatementStream = async (data, res) => {
 
   // ---------------------------------------------------------------- header (first page)
   let y = PAGE.margin;
-  if (logo) {
-    try { doc.image(logo, L, y, { fit: [96, 44], valign: 'center' }); } catch { /* unreadable image: keep the text */ }
-  } else {
-    box(L, y + 2, 40, 40, C.ink, 8);
-    font('Helvetica-Bold', 14, '#FFFFFF');
-    text(initials(issuer.name), L, y + 15, { width: 40, align: 'center' });
-  }
-  const issuerX = L + (logo ? 108 : 52);
-  font('Helvetica-Bold', 12, C.ink);
-  text(issuer.name || 'Inmobiliaria', issuerX, y + 4, { width: 230 });
-  font('Helvetica', 8, C.muted);
+  const TITLE_W = 250;
+  // «Lote 3 manzana 3» on one line and «Proyecto Marbella» on the next, never cut in between
+  const subject = title.replace(/^Estado de cuenta\s*/i, '') || projectName;
+  const at = subject.search(/\bproyecto\b/i);
+  const lines = (at > 0 ? [subject.slice(0, at).trim(), subject.slice(at).trim()] : [subject])
+    .map((line) => line.charAt(0).toUpperCase() + line.slice(1));
+  const subjectText = lines.join('\n');
+  font('Helvetica-Bold', 12.5, C.ink);
+  // Right block: label, the property (one or two lines) and the cut date
+  const subjectH = doc.heightOfString(subjectText, { width: TITLE_W });
+  const rightH = 12 + subjectH + 14;
   const contact = [issuer.nit && `NIT ${issuer.nit}`, issuer.address, issuer.phone && `Tel. ${issuer.phone}`, issuer.email].filter(Boolean);
-  text(contact.slice(0, 2).join('  ·  '), issuerX, y + 20, { width: 230 });
-  text(contact.slice(2).join('  ·  '), issuerX, y + 31, { width: 230 });
+  const contactLines = [contact.slice(0, 2).join('  ·  '), contact.slice(2).join('  ·  ')].filter(Boolean);
+  const leftH = 11 + 16 + contactLines.length * 11;
+  // Both blocks and the logo share the same middle line
+  const headerH = Math.max(44, rightH, leftH);
+  const logoY = y + (headerH - 44) / 2;
+
+  if (logo) {
+    try { doc.image(logo, L, logoY, { fit: [96, 44], valign: 'center' }); } catch { /* unreadable image: keep the text */ }
+  } else {
+    box(L, logoY, 44, 44, C.ink, 8);
+    font('Helvetica-Bold', 14, '#FFFFFF');
+    text(initials(issuer.name), L, logoY + 15, { width: 44, align: 'center' });
+  }
+  const issuerX = L + (logo ? 108 : 56);
+  const issuerW = R - TITLE_W - 16 - issuerX;
+  let leftY = y + (headerH - leftH) / 2;
+  label('Inmobiliaria', issuerX, leftY, issuerW);
+  leftY += 11;
+  font('Helvetica-Bold', 12.5, C.ink);
+  text(issuer.name || 'Inmobiliaria', issuerX, leftY, { width: issuerW });
+  leftY += 16;
+  font('Helvetica', 8, C.muted);
+  contactLines.forEach((line) => { text(line, issuerX, leftY, { width: issuerW }); leftY += 11; });
 
   // Title on the right: «ESTADO DE CUENTA» and the property it is about
+  let rightY = y + (headerH - rightH) / 2;
   font('Helvetica-Bold', 7.5, C.brand);
-  text('ESTADO DE CUENTA', R - 220, y + 2, { width: 220, align: 'right', characterSpacing: 1 });
+  text('ESTADO DE CUENTA', R - TITLE_W, rightY, { width: TITLE_W, align: 'right', characterSpacing: 1 });
+  rightY += 12;
   font('Helvetica-Bold', 12.5, C.ink);
-  const subject = title.replace(/^Estado de cuenta\s*/i, '') || projectName;
-  doc.text(subject.charAt(0).toUpperCase() + subject.slice(1), R - 220, y + 14, { width: 220, align: 'right' });
+  doc.text(subjectText, R - TITLE_W, rightY, { width: TITLE_W, align: 'right' });
+  rightY += subjectH + 2;
   font('Helvetica', 8, C.muted);
-  text(`Corte al ${date(summary.generatedAt)}  ·  Contrato ${String(contractId).slice(-6).toUpperCase()}`, R - 220, Math.max(doc.y + 3, y + 32), { width: 220, align: 'right' });
+  text(`Corte al ${date(summary.generatedAt)}  ·  Contrato ${String(contractId).slice(-6).toUpperCase()}`, R - TITLE_W, rightY, { width: TITLE_W, align: 'right' });
 
-  y = Math.max(doc.y, y + 50) + 14;
+  y += headerH + 14;
   rule(y);
   y += 16;
 
