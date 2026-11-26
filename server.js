@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './src/app.js';
 import connectDB from './src/config/database.js';
 import { startCampaignWorker } from './src/services/campaignSender.service.js';
+import { startNoticeWorker } from './src/services/automaticNotices.service.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -18,6 +19,8 @@ const startServer = async () => {
       });
       // WhatsApp sends go out from this process (there is no other scheduler)
       startCampaignWorker();
+      // Plan de pagos, quota reminders and rejected payments, inside the contact hours of Ley 2300
+      startNoticeWorker();
     }
   } catch (error) {
     console.error('Failed to start database connection:', error.message);

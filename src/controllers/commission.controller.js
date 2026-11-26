@@ -2,7 +2,8 @@ import Commission from '../models/Commission.js';
 import User from '../models/User.js';
 import AppError from '../utils/AppError.js';
 import { getNextSequence } from '../models/Counter.js';
-import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
+import { sendEmail } from '../utils/notifications.js';
+import { projectAccountants, sendTeamCommissionNotice } from '../services/commission.service.js';
 import { uploadToR2 } from '../utils/storage.js';
 
 // POST /commissions/upload-support — uploads a support document (PDF or image) to Cloudflare R2
@@ -84,7 +85,8 @@ const getInstallment = (commission, installmentIndex) => {
   return { idx, installment: commission.installments[idx] };
 };
 
-const notifySeller = async (commission, message, subject) => {
+// `detail` is the WhatsApp version: one lowercase sentence for the operix_aviso_comision template
+const notifySeller = async (commission, message, subject, detail) => {
   try {
     const seller = await User.findById(commission.sellerId).populate({
       path: 'accountId',
@@ -94,30 +96,23 @@ const notifySeller = async (commission, message, subject) => {
     if (seller.accountId.email) {
       await sendEmail(seller.accountId.email, subject, `<p>${message}</p>`);
     }
-    if (seller.accountId.phone) {
-      await sendWhatsApp(seller.accountId.phone, message);
-    }
+    await sendTeamCommissionNotice({ companyId: commission.companyId, account: seller.accountId, detail });
   } catch (error) {
     console.error('[COMMISSION] Error notificando al asesor:', error);
   }
 };
 
-const notifyAccountants = async (tenantId, message, subject) => {
+// Only the accountants of the commission's project, not every one of the inmobiliaria
+const notifyAccountants = async ({ tenantId, companyId }, message, subject, detail) => {
   try {
-    const accountants = await User.find({
-      tenantId,
-      role: { $in: ['contador', 'auxiliar_contable'] },
-      status: 'active',
-    }).populate({ path: 'accountId', select: 'fullName email phone' });
+    const accountants = await projectAccountants({ tenantId, companyId });
 
     for (const acc of accountants) {
       if (!acc.accountId) continue;
       if (acc.accountId.email) {
         await sendEmail(acc.accountId.email, subject, `<p>${message}</p>`);
       }
-      if (acc.accountId.phone) {
-        await sendWhatsApp(acc.accountId.phone, message);
-      }
+      await sendTeamCommissionNotice({ companyId, account: acc.accountId, detail });
     }
   } catch (error) {
     console.error('[COMMISSION] Error notificando a contabilidad:', error);
@@ -207,9 +202,10 @@ export const radicarComision = async (req, res, next) => {
 
     // Notify accountants
     await notifyAccountants(
-      tenantId,
+      { tenantId, companyId: commission.companyId },
       `Se ha radicado la cuenta de cobro #${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} de ${sellerName} (${milestoneLabel}). Ingresa al módulo de Comisiones para aprobarla o rechazarla.`,
-      `Cuenta de cobro radicada #${installment.billingNumber}`
+      `Cuenta de cobro radicada #${installment.billingNumber}`,
+      `${sellerName} radicó la cuenta de cobro n.º ${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} (${milestoneLabel}) y está por aprobar o rechazar`,
     );
 
     // Notify seller with confirmation receipt
@@ -233,9 +229,12 @@ export const radicarComision = async (req, res, next) => {
 
     // Notify seller via WhatsApp (plan maestro: comisiones radicadas por Twilio WhatsApp)
     if (sellerUser?.accountId?.phone) {
-      const waMessage = `Hola ${sellerName}, tu cuenta de cobro para ${milestoneLabel} fue RADICADA con el No. RAD-${String(billingSeq).padStart(4, '0')} por $${installment.amount.toLocaleString('es-CO')}. Contabilidad revisará tus 4 soportes para procesar el pago.`;
       try {
-        await sendWhatsApp(sellerUser.accountId.phone, waMessage);
+        await sendTeamCommissionNotice({
+          companyId: commission.companyId,
+          account: sellerUser.accountId,
+          detail: `tu cuenta de cobro de ${milestoneLabel} quedó radicada con el n.º RAD-${String(billingSeq).padStart(4, '0')} por $${installment.amount.toLocaleString('es-CO')} y contabilidad revisará los soportes`,
+        });
       } catch (waError) {
         console.error('[COMMISSION] Error enviando WhatsApp de radicado:', waError);
       }
@@ -278,7 +277,8 @@ export const aprobarComision = async (req, res, next) => {
     await notifySeller(
       commission,
       `Tu cuenta de cobro #${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} fue APROBADA.`,
-      'Cuenta de cobro aprobada'
+      'Cuenta de cobro aprobada',
+      `tu cuenta de cobro n.º ${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} fue aprobada`,
     );
 
     res.json({
@@ -322,7 +322,8 @@ export const rechazarComision = async (req, res, next) => {
     await notifySeller(
       commission,
       `Tu cuenta de cobro #${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} fue RECHAZADA. Motivo: ${rejectedReason.trim()}. Puedes corregirla y volver a radicarla.`,
-      'Cuenta de cobro rechazada'
+      'Cuenta de cobro rechazada',
+      `tu cuenta de cobro n.º ${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} fue rechazada (motivo: ${rejectedReason.trim().replace(/\s+/g, ' ')}); puedes corregirla y radicarla de nuevo`,
     );
 
     res.json({
@@ -361,7 +362,8 @@ export const pagarComision = async (req, res, next) => {
     await notifySeller(
       commission,
       `Tu comisión por $${installment.amount.toLocaleString('es-CO')} (cuenta de cobro #${installment.billingNumber}) fue PAGADA. ¡Felicitaciones!`,
-      'Comisión pagada'
+      'Comisión pagada',
+      `tu comisión por $${installment.amount.toLocaleString('es-CO')} (cuenta de cobro n.º ${installment.billingNumber}) fue pagada`,
     );
 
     res.json({

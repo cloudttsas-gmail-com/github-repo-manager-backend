@@ -3,7 +3,10 @@ import Commission from '../models/Commission.js';
 import Quota from '../models/Quota.js';
 import User from '../models/User.js';
 import UserAccount from '../models/UserAccount.js';
-import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
+import Company from '../models/Company.js';
+import UserCompany from '../models/UserCompany.js';
+import { sendEmail } from '../utils/notifications.js';
+import { sendCompanyNotice } from './whatsappTemplates.service.js';
 
 const roundMoney = (n) => Math.round(n);
 
@@ -206,6 +209,26 @@ export const syncRetroactiveCommissions = async ({ tenantId, companyId }) => {
   return { createdCount, evaluatedCount, totalContracts: contracts.length };
 };
 
+/**
+ * A commission notice to someone of the team by WhatsApp, from the project's number with the
+ * `operix_aviso_comision` template: Meta drops free text outside the 24-hour window. `detail` is
+ * the news in one lowercase sentence without a final period.
+ */
+export const sendTeamCommissionNotice = async ({ companyId, account, detail }) => {
+  if (!account?.phone) return null;
+  const company = await Company.findById(companyId);
+  if (!company) return null;
+  return sendCompanyNotice({ company, to: account.phone, notice: 'aviso_comision', values: { name: account.fullName, detail } });
+};
+
+/** The accountants of a project (contador, auxiliar contable) who are active, with their account. */
+export const projectAccountants = async ({ tenantId, companyId }) => {
+  const memberships = await UserCompany.find({ tenantId, companyId, role: { $in: ['contador', 'auxiliar_contable'] } }).select('userId').lean();
+  if (!memberships.length) return [];
+  return User.find({ _id: { $in: memberships.map((m) => m.userId) }, tenantId, status: 'active' })
+    .populate({ path: 'accountId', select: 'fullName email phone' });
+};
+
 const notifySellerCommissionAvailable = async (commission, activated) => {
   try {
     const seller = await User.findById(commission.sellerId).populate({
@@ -220,9 +243,11 @@ const notifySellerCommissionAvailable = async (commission, activated) => {
     if (seller.accountId.email) {
       await sendEmail(seller.accountId.email, 'Comisión disponible - Radica tu cuenta de cobro', `<p>${message}</p>`);
     }
-    if (seller.accountId.phone) {
-      await sendWhatsApp(seller.accountId.phone, message);
-    }
+    await sendTeamCommissionNotice({
+      companyId: commission.companyId,
+      account: seller.accountId,
+      detail: `ya tienes una comisión disponible por $${total.toLocaleString('es-CO')}; radica tu cuenta de cobro para gestionar su pago`,
+    });
   } catch (error) {
     console.error('[COMMISSION] Error notificando comisión disponible:', error);
   }

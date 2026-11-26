@@ -16,6 +16,7 @@ import { claimPaymentRequest } from '../utils/idempotency.js';
 import { campaignTemplates, lastPayments, recipientValues, renderBody, sendComponents } from '../services/campaignTemplates.service.js';
 import { kickCampaigns } from '../services/campaignSender.service.js';
 import { LEGAL_CONTACT_POLICY, nextContactWindow, resolveContactPolicy, validateContactPolicy } from '../services/contactPolicy.service.js';
+import { OVERDUE_STEPS, REMINDER_DAYS_BEFORE, resolveReminders, validateReminders } from '../services/automaticNotices.service.js';
 import { agencyName } from '../utils/agency.js';
 import { companyWhatsAppAccount } from '../services/whatsappTemplates.service.js';
 import { whatsappService } from '../services/whatsapp.service.js';
@@ -57,12 +58,18 @@ const pickTemplate = async (company, input) => {
 
 const excludedList = (excluded = {}) => Object.entries(excluded).map(([reason, count]) => ({ reason, label: SKIP_LABELS[reason] || reason, count }));
 
-/** GET /api/campaigns/policy: the project's contact hours and weekly limit, with the legal limits (`defaults`). */
+// The automatic quota reminders and the choices the panel offers
+const remindersData = (company) => ({ ...resolveReminders(company.reminders), daysBeforeOptions: REMINDER_DAYS_BEFORE, overdueSteps: OVERDUE_STEPS });
+
+/**
+ * GET /api/campaigns/policy: the project's contact hours and weekly limit, with the legal limits
+ * (`defaults`), and its automatic quota reminders (`reminders`).
+ */
 router.get('/policy', canSend, async (req, res, next) => {
   try {
     const company = await loadCompany(req);
     if (!company) return notFound(res, 'Proyecto no encontrado');
-    res.json({ success: true, data: { policy: resolveContactPolicy(company.contactPolicy), defaults: LEGAL_CONTACT_POLICY } });
+    res.json({ success: true, data: { policy: resolveContactPolicy(company.contactPolicy), defaults: LEGAL_CONTACT_POLICY, reminders: remindersData(company) } });
   } catch (error) { next(error); }
 });
 
@@ -72,13 +79,22 @@ router.put('/policy', checkPermission(PERMISSIONS.CONFIG_TENANT), async (req, re
     let changes;
     const company = await loadCompany(req);
     if (!company) return notFound(res, 'Proyecto no encontrado');
-    try { changes = validateContactPolicy(req.body || {}, company.contactPolicy); } catch (error) { return badRequest(res, error.message); }
-    const before = resolveContactPolicy(company.contactPolicy);
+    let reminderChanges;
+    const { reminders: reminderInput, ...policyInput } = req.body || {};
+    try {
+      changes = validateContactPolicy(policyInput, company.contactPolicy);
+      reminderChanges = validateReminders(reminderInput || {});
+    } catch (error) { return badRequest(res, error.message); }
+    const before = { ...resolveContactPolicy(company.contactPolicy), reminders: resolveReminders(company.reminders) };
     company.contactPolicy = { ...(company.contactPolicy?.toObject?.() || company.contactPolicy || {}), ...changes };
+    company.reminders = { ...(company.reminders?.toObject?.() || company.reminders || {}), ...reminderChanges };
     await company.save();
     const policy = resolveContactPolicy(company.contactPolicy);
-    await logAudit(req, { action: 'UPDATE_CONTACT_POLICY', module: 'COMPANIES', targetId: company._id, details: { before, after: policy } });
-    res.json({ success: true, data: { policy, defaults: LEGAL_CONTACT_POLICY } });
+    await logAudit(req, {
+      action: 'UPDATE_CONTACT_POLICY', module: 'COMPANIES', targetId: company._id,
+      details: { before, after: { ...policy, reminders: resolveReminders(company.reminders) } },
+    });
+    res.json({ success: true, data: { policy, defaults: LEGAL_CONTACT_POLICY, reminders: remindersData(company) } });
   } catch (error) { next(error); }
 });
 

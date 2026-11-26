@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { whatsappService } from '../services/whatsapp.service.js';
 import CampaignRecipient from '../models/CampaignRecipient.js';
+import ScheduledNotice from '../models/ScheduledNotice.js';
 import {
   companyWhatsAppAccount, ensureDefaultTemplates, buildCompanyTemplate, buildTemplateEdit, buildRestoreEdit, templateFieldsFor,
   prepareHeaderSample, DOCUMENT_SOURCES, projectSamples,
@@ -24,7 +25,7 @@ import crypto from 'crypto';
 const activeCompany = (req) => Company.findOne({ _id: req.user.companyId, tenantId: req.user.tenantId });
 
 // Each project sends and keeps its templates in its own WhatsApp account, never in Operix's
-const NOT_CONNECTED = 'Conecta el número de WhatsApp del proyecto en Configuración › Integraciones.';
+const NOT_CONNECTED = 'Conecta el número de WhatsApp del proyecto en Configuración › WhatsApp e integraciones.';
 const accountOf = async (req) => companyWhatsAppAccount(await activeCompany(req));
 
 /**
@@ -143,7 +144,7 @@ const processInboundMessage = async (value, messageData) => {
         ? messageData.interactive.button_reply.title
         : messageData.interactive.list_reply.title;
     } else {
-      text = `[Mensaje tipo ${messageData.type}]`;
+      text = mediaMessageText(messageData);
     }
 
     // Match the client by the last 10 digits, whatever separators the stored number has
@@ -157,18 +158,27 @@ const processInboundMessage = async (value, messageData) => {
     let conv = client
       ? await Conversation.findOne({ clientId: client._id })
       : await Conversation.findOne({ tenantId: String(tenantId), companyId: company._id, waId: whatsappService.formatPhoneNumber(waId) });
-    if (!client && !conv) {
-      console.warn('[WHATSAPP WEBHOOK] message from a number with no client and no chat');
-      return;
-    }
     if (!conv) {
-      conv = await Conversation.create({
-        tenantId: client.tenantId,
-        companyId: company._id,
-        clientId: client._id,
-        waId: waId,
-        lastMessage: text,
-      });
+      // A number that is not a buyer gets its own chat too, so the team sees who wrote
+      const formatted = whatsappService.formatPhoneNumber(waId);
+      try {
+        conv = await Conversation.create({
+          tenantId: String(tenantId),
+          companyId: company._id,
+          ...(client ? { clientId: client._id } : {}),
+          waId: formatted,
+          lastMessage: text,
+          unreadCount: 1,
+        });
+      } catch (error) {
+        // One chat per number in the inmobiliaria: it may already exist (another project, or a race)
+        if (error?.code !== 11000) throw error;
+        conv = await Conversation.findOne({ tenantId: String(tenantId), waId: formatted });
+        if (!conv) throw error;
+        conv.lastMessage = text;
+        conv.unreadCount += 1;
+        await conv.save();
+      }
     } else {
       conv.lastMessage = text;
       conv.unreadCount += 1;
@@ -181,13 +191,35 @@ const processInboundMessage = async (value, messageData) => {
       tenantId: String(tenantId),
       waId: messageData.id,
       direction: 'inbound',
-      type: messageData.type === 'text' ? 'text' : 'button',
+      type: MESSAGE_TYPES[messageData.type] || 'text',
       body: text,
       status: 'received',
     });
     console.log(`[WHATSAPP WEBHOOK] inbound ${messageData.type} message stored`);
     if (client) await recordCampaignReply({ tenantId, companyId: company._id, phonePattern }, text);
   }
+};
+
+// How each kind of message is stored; Operix keeps no media file, only says what arrived
+const MESSAGE_TYPES = { text: 'text', button: 'button', interactive: 'button', image: 'image', document: 'document' };
+const MEDIA_LABELS = {
+  image: 'Foto', audio: 'Audio', voice: 'Nota de voz', video: 'Video', document: 'Documento', sticker: 'Sticker',
+  location: 'Ubicación', contacts: 'Contacto', reaction: 'Reacción',
+};
+
+/**
+ * What a chat shows for a message that is not text: «📎 Foto: <caption>». The file stays in
+ * WhatsApp: the team sees it in the WhatsApp Business app.
+ */
+export const mediaMessageText = (messageData = {}) => {
+  const type = messageData.type === 'audio' && messageData.audio?.voice ? 'voice' : messageData.type;
+  const label = MEDIA_LABELS[type] || 'Mensaje';
+  const media = messageData[messageData.type] || {};
+  if (type === 'reaction') return `${label}: ${media.emoji || ''}`.trim();
+  if (type === 'location') return `${label}${media.name ? `: ${media.name}` : ''}`;
+  const detail = media.caption || media.filename || '';
+  const known = MEDIA_LABELS[type] ? '' : ' que Operix no muestra';
+  return `📎 ${label}${known}${detail ? `: ${detail}` : ''} (ábrelo en la app de WhatsApp Business)`;
 };
 
 /** Regex for the last 10 digits of a number, allowing spaces, dashes or dots between them as stored. */
@@ -244,6 +276,11 @@ const recordCampaignStatus = async (status) => {
     // A failure report never undoes a read one (they can arrive out of order)
     await CampaignRecipient.updateOne({ waMessageId: status.id, status: { $ne: 'read' } }, {
       status: 'failed',
+      error: error ? `${error.title || error.message || 'Error'}${error.code ? ` (${error.code})` : ''}` : 'Meta no entregó el mensaje',
+    });
+    // An automatic notice that never arrived does not count for the weekly limit either
+    await ScheduledNotice.updateOne({ waMessageId: status.id, status: 'sent' }, {
+      status: 'failed', sentAt: null,
       error: error ? `${error.title || error.message || 'Error'}${error.code ? ` (${error.code})` : ''}` : 'Meta no entregó el mensaje',
     });
     return;
@@ -616,6 +653,11 @@ export const prepareTemplateHeader = async (req, res, next) => {
 export const deleteTemplate = async (req, res, next) => {
   try {
     const { name } = req.params;
+    // Deleting a notice's template turns that notice off, and Meta keeps the name blocked for 30 days:
+    // a rejected one is fixed with «Editar» or «Crear plantillas de los avisos»
+    if (String(name).startsWith('operix_')) {
+      return next(new AppError('Las plantillas de los avisos automáticos no se borran: si Meta rechazó una, edítala o usa «Crear plantillas de los avisos».', 403));
+    }
     const waConfig = await accountOf(req);
     if (!waConfig) return next(new AppError(NOT_CONNECTED, 400));
     const result = await whatsappService.deleteTemplate(waConfig, name);

@@ -196,6 +196,17 @@ export const DEFAULT_TEMPLATES = {
       { type: 'BUTTONS', buttons: [urlButton('Reportar el pago de nuevo', publicPageBase(), 'inmobiliaria-horizonte/payments')] },
     ],
   },
+  // To the team (sellers and accountants), not to buyers: Meta only takes free text inside the 24-hour window
+  operix_aviso_comision: {
+    category: 'UTILITY',
+    components: ({ agency }) => [
+      body(
+        'Hola {{1}}, hay una novedad en las comisiones con {{2}}: {{3}}.\n\nRevisa el detalle en Operix, en Comercial › Comisiones.',
+        [EXAMPLE.client, EXAMPLE.agency, 'la cuenta de cobro n.º 12 por $1.250.000 fue aprobada'],
+      ),
+      footer(agency),
+    ],
+  },
   operix_estado_cuenta: {
     category: 'UTILITY',
     documentHeader: true,
@@ -329,6 +340,29 @@ const NOTICES = {
     bodyParams([v.clientName, v.agency, v.amount, v.date, v.property, v.receiptNumber]),
     urlParam(publicLinkSuffix(v.statementUrl)),
   ],
+  plan_pagos: (v) => [
+    documentParam(v.statementUrl, 'Plan de pagos.pdf'),
+    bodyParams([v.clientName, v.property, v.agency, v.quotaCount, v.firstDate]),
+    urlParam(publicLinkSuffix(v.statementUrl)),
+  ],
+  plan_actualizado: (v) => [
+    documentParam(v.statementUrl, 'Plan de pagos.pdf'),
+    bodyParams([v.clientName, v.agency, v.property, v.reason, v.fromQuota]),
+  ],
+  cuota_por_vencer: (v) => [
+    bodyParams([v.clientName, v.quotaNumber, v.property, v.amount, v.date, v.agency]),
+    urlParam(`${v.slug}/payments`),
+  ],
+  // The call button carries a fixed number: nothing to fill
+  cuota_vencida: (v) => [
+    bodyParams([v.clientName, v.quotaNumber, v.property, v.date, v.amount, v.agency]),
+    urlParam(`${v.slug}/payments`),
+  ],
+  pago_rechazado: (v) => [
+    bodyParams([v.clientName, v.agency, v.amount, v.date, v.reason]),
+    urlParam(`${v.slug}/payments`),
+  ],
+  aviso_comision: (v) => [bodyParams([v.name, v.agency, v.detail])],
   estado_cuenta: (v) => [
     documentParam(v.statementUrl, `${v.title || 'Estado de cuenta'}.pdf`),
     bodyParams([v.clientName, v.property, v.agency, v.date, v.paid, v.balance, v.nextDue]),
@@ -370,6 +404,13 @@ export const shortDate = (date) => (date
   : '-');
 
 const PROPERTY_NOUNS = { lotes: 'el lote', casas: 'la casa', apartamentos: 'el apartamento', locales: 'el local' };
+
+/** What follows «la cuota» in a notice: «5», «inicial 2» or «de separación» (initial and ordinary quotas share numbers). */
+export const quotaNumberText = (quota) => {
+  if (!quota) return '-';
+  if (quota.type === 'inicial') return Number(quota.number) === 0 ? 'de separación' : `inicial ${quota.number}`;
+  return String(quota.number ?? '-');
+};
 
 /** «el lote 12 de la manzana B», or «tu inmueble» when the lot is unknown. */
 export const propertyName = (lot, propertyType) => {

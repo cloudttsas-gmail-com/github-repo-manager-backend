@@ -468,6 +468,14 @@ export const rejectPayment = async (req, res, next) => {
       commissions = await revokeCommissionsAfterRevert({ attempt, tenantId, companyId, entries: attempt.quotas });
     }
 
+    // The buyer learns why, by WhatsApp inside the contact hours; it never holds back the answer
+    try {
+      const { queueRejectedPaymentNotice } = await import('../services/automaticNotices.service.js');
+      await queueRejectedPaymentNotice(claimed);
+    } catch (noticeError) {
+      console.error('[LOG][PAYMENTS] Error queuing the rejected payment notice:', noticeError.message);
+    }
+
     await logAudit(req, {
       action: 'REJECT_PAYMENT',
       module: 'PAYMENTS',
