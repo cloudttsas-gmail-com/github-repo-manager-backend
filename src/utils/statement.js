@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { fileDisposition } from '../services/statementSummary.service.js';
 
 /**
  * Helper to format currency values as COP
@@ -20,6 +21,7 @@ const formatCurrency = (value) => {
 export const generateStatementStream = async (data, res) => {
   const {
     contractId,
+    title = 'Estado de cuenta',
     clientName,
     clientId,
     clientPhone,
@@ -56,11 +58,12 @@ export const generateStatementStream = async (data, res) => {
     size: 'LETTER',
     margins: { top: 35, bottom: 0, left: 35, right: 35 },
     bufferPages: true,
+    info: { Title: title },
   });
 
   // Stream directly to response
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `inline; filename=estado_cuenta_${contractId}.pdf`);
+  res.setHeader('Content-Disposition', fileDisposition('inline', title, 'pdf'));
   doc.pipe(res);
 
   // Helper to draw standard header on any page
@@ -104,10 +107,12 @@ export const generateStatementStream = async (data, res) => {
       }
 
       // ================= DOCUMENT TITLE (Right) =================
-      doc.fontSize(13)
+      // «Estado de cuenta lote 3 manzana 3 proyecto Marbella»; long titles wrap and push the lines below
+      doc.fontSize(11)
          .font('Helvetica-Bold')
          .fillColor('#2c3e50')
-         .text('ESTADO DE CUENTA', 410, 42, { width: 167, align: 'right' });
+         .text(title, 410, 38, { width: 167, align: 'right' });
+      const titleBottom = Math.max(doc.y + 2, 58);
 
       const dateStr = new Date().toLocaleDateString('es-CO', {
         year: 'numeric',
@@ -119,18 +124,18 @@ export const generateStatementStream = async (data, res) => {
       doc.fontSize(7.5)
          .font('Helvetica')
          .fillColor('#757575')
-         .text(`Generado: ${dateStr}`, 410, 58, { width: 167, align: 'right' });
+         .text(`Generado: ${dateStr}`, 410, titleBottom, { width: 167, align: 'right' });
          
       doc.fontSize(8.5)
          .font('Helvetica-Bold')
          .fillColor('#2e7d32')
-         .text(`ID CONTRATO: ${contractId.toString().slice(-6).toUpperCase()}`, 410, 72, { width: 167, align: 'right' });
+         .text(`ID CONTRATO: ${contractId.toString().slice(-6).toUpperCase()}`, 410, titleBottom + 12, { width: 167, align: 'right' });
     } else {
       // Header for secondary pages
       doc.fillColor('#2c3e50');
       doc.fontSize(9)
          .font('Helvetica-Bold')
-         .text(`ESTADO DE CUENTA - ${clientName.toUpperCase()}`, 35, 30, { width: 400 });
+         .text(`${title} - ${clientName}`, 35, 30, { width: 400, lineBreak: false, ellipsis: true });
       
       doc.fontSize(8)
          .font('Helvetica')

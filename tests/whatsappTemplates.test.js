@@ -12,6 +12,7 @@ import {
   DEFAULT_TEMPLATES, companyWhatsAppAccount, ensureDefaultTemplates, sendCompanyNotice, publicLinkSuffix, propertyName, internationalPhone,
   buildCompanyTemplate, buildTemplateEdit, templateFieldsFor, prepareHeaderSample, projectSamples,
 } from '../src/services/whatsappTemplates.service.js';
+import { statementTitle, fileDisposition } from '../src/services/statementSummary.service.js';
 import { sendOTPCode } from '../src/utils/otpHelper.js';
 import connectDB from '../src/config/database.js';
 
@@ -124,6 +125,21 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
     }
   });
 
+  it('every notice talks to the buyer as «tú», as Mario asked', () => {
+    Object.entries(DEFAULT_TEMPLATES).forEach(([, definition]) => {
+      const text = definition.components({ agency: 'X', handle: 'h' }).find((c) => c.type === 'BODY').text;
+      if (text) expect(text).not.toMatch(/\b(usted|su|sus|le|les|reportó|pagó)\b/i);
+    });
+  });
+
+  it('the statement is titled with the lot, block and project', () => {
+    expect(statementTitle({ lotNumber: '3', manzana: '3' }, { name: 'Marbella', propertyType: 'lotes' })).toBe('Estado de cuenta lote 3 manzana 3 proyecto Marbella');
+    expect(statementTitle({ lotNumber: '301', propertyType: 'apartamentos' }, { name: 'Proyecto Demo' })).toBe('Estado de cuenta apartamento 301 Proyecto Demo');
+    expect(statementTitle(null, { name: 'Marbella' })).toBe('Estado de cuenta proyecto Marbella');
+    expect(fileDisposition('inline', 'Estado de cuenta lote 3 proyecto Peñalisa', 'pdf'))
+      .toBe("inline; filename=\"estado_de_cuenta_lote_3_proyecto_penalisa.pdf\"; filename*=UTF-8''Estado%20de%20cuenta%20lote%203%20proyecto%20Pe%C3%B1alisa.pdf");
+  });
+
   it('no notice starts or ends with a variable, or puts two together', () => {
     Object.entries(DEFAULT_TEMPLATES).forEach(([, definition]) => {
       const text = definition.components({ agency: 'X', handle: 'h' }).find((c) => c.type === 'BODY').text;
@@ -194,7 +210,7 @@ describe('Each company sends its notices with templates of its own WhatsApp acco
   it('names the property and cuts the signed link after /api/public/', () => {
     expect(propertyName({ lotNumber: '12', manzana: 'B' }, 'lotes')).toBe('el lote 12 de la manzana B');
     expect(propertyName({ lotNumber: '301', propertyType: 'apartamentos' })).toBe('el apartamento 301');
-    expect(propertyName(null)).toBe('su inmueble');
+    expect(propertyName(null)).toBe('tu inmueble');
     expect(publicLinkSuffix('https://api.test/api/public/statement/xyz?s=sig')).toBe('statement/xyz?s=sig');
   });
 });

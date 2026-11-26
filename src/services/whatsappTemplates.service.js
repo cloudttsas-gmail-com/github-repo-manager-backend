@@ -13,8 +13,8 @@ import { resolvePaymentPlanPolicy, toCalendarDate, dayInMonth, compareCalendar }
  * Every company sends from its own number and its own WhatsApp Business account (WABA),
  * with templates that live in that account. Without a connected number nothing goes out by
  * WhatsApp (the email of each notice still does). Texts approved by Sebastián on 11 Nov 2026
- * (planes/2026-11-11-plantillas-meta-textos.md); tone and inmobiliaria/project data reviewed
- * with Mario on 24 Nov 2026 (planes/2026-11-24-feedback-mario.md).
+ * (planes/2026-11-11-plantillas-meta-textos.md); tone (tú), inmobiliaria/project data and
+ * statement title reviewed with Mario on 24-26 Nov 2026 (planes/2026-11-24-feedback-mario.md).
  */
 
 const LANGUAGE = 'es';
@@ -104,7 +104,7 @@ export const DEFAULT_TEMPLATES = {
     category: 'UTILITY',
     components: ({ agency }) => [
       body(
-        'Hola {{1}}, en {{2}} queremos que le lleguen a tiempo los recibos y avisos sobre {{3}}. ¿Nos ayuda a confirmar sus datos de contacto?\n\nSolo toma un minuto.',
+        'Hola {{1}}, en {{2}} queremos que te lleguen a tiempo los recibos y avisos sobre {{3}}. ¿Nos ayudas a confirmar tus datos de contacto?\n\nSolo toma un minuto.',
         [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.propertyInProject],
       ),
       footer(agency),
@@ -117,7 +117,7 @@ export const DEFAULT_TEMPLATES = {
     components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, le compartimos el plan de pagos para {{2}} con {{3}}: {{4}} cuotas, la primera el {{5}}.\n\nGuarde este documento para tener a mano las fechas y los valores. Si algo no le queda claro, escríbanos por este chat.',
+        'Hola {{1}}, te compartimos el plan de pagos para {{2}} con {{3}}: {{4}} cuotas, la primera el {{5}}.\n\nGuarda este documento para tener a mano las fechas y los valores. Si algo no te queda claro, escríbenos por este chat.',
         [EXAMPLE.client, EXAMPLE.propertyInProject, EXAMPLE.agency, '24', EXAMPLE.date],
       ),
       footer(agency),
@@ -130,7 +130,7 @@ export const DEFAULT_TEMPLATES = {
     components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, en {{2}} actualizamos el plan de pagos para {{3}}. Motivo: {{4}}.\n\nDesde la cuota {{5}} aplican las fechas y los valores del documento adjunto. Si tiene preguntas, con gusto le ayudamos por este chat.',
+        'Hola {{1}}, en {{2}} actualizamos el plan de pagos para {{3}}. Motivo: {{4}}.\n\nDesde la cuota {{5}} aplican las fechas y los valores del documento adjunto. Si tienes preguntas, con gusto te ayudamos por este chat.',
         [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.propertyInProject, 'cambio del día de pago', '3'],
       ),
       footer(agency),
@@ -140,7 +140,7 @@ export const DEFAULT_TEMPLATES = {
     category: 'UTILITY',
     components: ({ agency }) => [
       body(
-        'Hola {{1}}, esperamos que esté muy bien. Le recordamos que la cuota {{2}} para {{3}}, por {{4}}, vence el {{5}}.\n\nSi ya pagó, no se preocupe: recibirá su recibo cuando {{6}} confirme el pago.',
+        'Hola {{1}}, esperamos que estés muy bien. Te recordamos que la cuota {{2}} para {{3}}, por {{4}}, vence el {{5}}.\n\nSi ya pagaste, no te preocupes: recibirás tu recibo cuando {{6}} confirme el pago.',
         [EXAMPLE.client, '5', EXAMPLE.propertyInProject, EXAMPLE.money, EXAMPLE.date, EXAMPLE.agency],
       ),
       footer(agency),
@@ -157,7 +157,7 @@ export const DEFAULT_TEMPLATES = {
     category: 'UTILITY',
     components: ({ agency, companyPhone }) => [
       body(
-        'Hola {{1}}, queremos ayudarle a ponerse al día. La cuota {{2}} para {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya pagó, cuéntenos para registrarlo. Si necesita un acuerdo, en {{6}} con gusto le escuchamos por este mismo chat.',
+        'Hola {{1}}, queremos ayudarte a ponerte al día. La cuota {{2}} para {{3}} venció el {{4}} y tiene un saldo pendiente de {{5}}.\n\nSi ya pagaste, cuéntanos para registrarlo. Si necesitas un acuerdo, en {{6}} con gusto te escuchamos por este mismo chat.',
         [EXAMPLE.client, '5', EXAMPLE.propertyInProject, EXAMPLE.date, EXAMPLE.money, EXAMPLE.agency],
       ),
       footer(agency),
@@ -177,7 +177,7 @@ export const DEFAULT_TEMPLATES = {
     components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, ¡gracias por su pago! En {{2}} confirmamos {{3}} del {{4}} para {{5}}.\n\nAdjuntamos el recibo n.º {{6}} para que lo guarde.',
+        'Hola {{1}}, ¡gracias por tu pago! En {{2}} confirmamos {{3}} del {{4}} para {{5}}.\n\nAdjuntamos el recibo n.º {{6}} para que lo guardes.',
         [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.money, EXAMPLE.date, EXAMPLE.propertyInProject, '1024'],
       ),
       footer(agency),
@@ -188,7 +188,7 @@ export const DEFAULT_TEMPLATES = {
     category: 'UTILITY',
     components: ({ agency }) => [
       body(
-        'Hola {{1}}, en {{2}} revisamos el pago de {{3}} que reportó el {{4}} y todavía no pudimos aprobarlo. Motivo: {{5}}.\n\nPuede reportarlo de nuevo con el comprobante correcto. Si necesita ayuda, escríbanos por este chat.',
+        'Hola {{1}}, en {{2}} revisamos el pago de {{3}} que reportaste el {{4}} y todavía no pudimos aprobarlo. Motivo: {{5}}.\n\nPuedes reportarlo de nuevo con el comprobante correcto. Si necesitas ayuda, escríbenos por este chat.',
         [EXAMPLE.client, EXAMPLE.agency, EXAMPLE.money, EXAMPLE.date, 'el comprobante no es legible'],
       ),
       footer(agency),
@@ -201,7 +201,7 @@ export const DEFAULT_TEMPLATES = {
     components: ({ agency, handle }) => [
       documentHeader(handle),
       body(
-        'Hola {{1}}, le compartimos su estado de cuenta para {{2}} con {{3}} al {{4}}: ha pagado {{5}} y su saldo es {{6}}.\n\nSu próxima cuota vence el {{7}}. En el documento adjunto encuentra el detalle de cada cuota y de cada pago.',
+        'Hola {{1}}, te compartimos tu estado de cuenta para {{2}} con {{3}} al {{4}}: has pagado {{5}} y tu saldo es {{6}}.\n\nTu próxima cuota vence el {{7}}. En el documento adjunto encuentras el detalle de cada cuota y de cada pago.',
         [EXAMPLE.client, EXAMPLE.propertyInProject, EXAMPLE.agency, EXAMPLE.date, '$9.000.000', '$21.000.000', EXAMPLE.date],
       ),
       footer(agency),
@@ -327,7 +327,7 @@ const NOTICES = {
     urlParam(publicLinkSuffix(v.statementUrl)),
   ],
   estado_cuenta: (v) => [
-    documentParam(v.statementUrl, 'Estado de cuenta.pdf'),
+    documentParam(v.statementUrl, `${v.title || 'Estado de cuenta'}.pdf`),
     bodyParams([v.clientName, v.property, v.agency, v.date, v.paid, v.balance, v.nextDue]),
     urlParam(publicLinkSuffix(v.statementUrl)),
   ],
@@ -368,9 +368,9 @@ export const shortDate = (date) => (date
 
 const PROPERTY_NOUNS = { lotes: 'el lote', casas: 'la casa', apartamentos: 'el apartamento', locales: 'el local' };
 
-/** «el lote 12 de la manzana B», or «su inmueble» when the lot is unknown. */
+/** «el lote 12 de la manzana B», or «tu inmueble» when the lot is unknown. */
 export const propertyName = (lot, propertyType) => {
-  if (!lot?.lotNumber) return 'su inmueble';
+  if (!lot?.lotNumber) return 'tu inmueble';
   const noun = PROPERTY_NOUNS[lot.propertyType || propertyType] || 'el inmueble';
   return `${noun} ${lot.lotNumber}${lot.manzana ? ` de la manzana ${lot.manzana}` : ''}`;
 };

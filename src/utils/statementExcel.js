@@ -1,5 +1,5 @@
 import XLSX from 'xlsx';
-import { bogotaDay } from '../services/statementSummary.service.js';
+import { bogotaDay, fileDisposition, statementTitle } from '../services/statementSummary.service.js';
 
 const day = (date) => (date ? bogotaDay(date) : '');
 
@@ -9,11 +9,11 @@ const TYPE_LABELS = { inicial: 'Inicial', normal: 'Ordinaria' };
  * Account statement as an Excel workbook: a summary sheet and the quotas,
  * built from the same summary as the PDF.
  */
-export const buildStatementWorkbook = ({ client, company, summary }) => {
+export const buildStatementWorkbook = ({ contract, client, company, summary }) => {
   const next = summary.nextQuota;
   const summaryRows = [
-    ['Estado de cuenta', ''],
-    ['Empresa', company?.name || ''],
+    [statementTitle(contract?.lot, company), ''],
+    ['Proyecto', company?.name || ''],
     ['Cliente', client?.name || ''],
     ['Identificación', client?.idNumber || ''],
     ['Negociación', summary.projectName || ''],
@@ -72,13 +72,10 @@ export const buildStatementWorkbook = ({ client, company, summary }) => {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 };
 
-export const statementFileName = (summary, ext) =>
-  `estado_cuenta_${summary.contractId.slice(-6).toUpperCase()}.${ext}`;
-
 export const sendStatementWorkbook = (res, loaded) => {
   const buffer = buildStatementWorkbook(loaded);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename=${statementFileName(loaded.summary, 'xlsx')}`);
+  res.setHeader('Content-Disposition', fileDisposition('attachment', statementTitle(loaded.contract?.lot, loaded.company), 'xlsx'));
   res.setHeader('Cache-Control', 'no-store');
   res.send(buffer);
 };

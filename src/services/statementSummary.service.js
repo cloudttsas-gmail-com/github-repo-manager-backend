@@ -69,6 +69,29 @@ export const lotLabel = (lot) => {
   return lot.nomenclature || base;
 };
 
+const TITLE_NOUNS = { lotes: 'lote', casas: 'casa', apartamentos: 'apartamento', locales: 'local' };
+
+/**
+ * «Estado de cuenta lote 3 manzana 3 proyecto Marbella»: title of the statement PDF and its file,
+ * as Mario asked (26 Nov 2026). The project is the company; without a lot only the project is named.
+ */
+export const statementTitle = (lot, company) => {
+  const parts = ['Estado de cuenta'];
+  if (lot?.lotNumber) {
+    parts.push(`${TITLE_NOUNS[lot.propertyType || company?.propertyType] || 'inmueble'} ${lot.lotNumber}`);
+    if (lot.manzana) parts.push(`manzana ${lot.manzana}`);
+  }
+  const project = company?.name?.trim();
+  if (project) parts.push(/^proyecto\b/i.test(project) ? project : `proyecto ${project}`);
+  return parts.join(' ');
+};
+
+/** Content-Disposition with the title as file name (ASCII fallback plus the UTF-8 one). */
+export const fileDisposition = (kind, title, ext) => {
+  const ascii = title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+  return `${kind}; filename="${ascii}.${ext}"; filename*=UTF-8''${encodeURIComponent(`${title}.${ext}`)}`;
+};
+
 const byTypeAndNumber = (a, b) => {
   if (a.type !== b.type) return a.type === 'inicial' ? -1 : 1;
   return (a.number || 0) - (b.number || 0);
@@ -217,6 +240,7 @@ export const getCompanyOverdueStats = async (tenantId, companyId, now = new Date
  * The data the PDF generator expects, taken from the summary.
  */
 export const toStatementPdfData = ({ contract, client, company, summary }) => ({
+  title: statementTitle(contract.lot, company),
   contractId: contract._id,
   clientName: client?.name || 'N/A',
   clientId: client?.idNumber || 'N/A',

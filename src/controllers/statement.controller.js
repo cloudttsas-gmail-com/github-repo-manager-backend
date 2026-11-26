@@ -13,7 +13,7 @@ import { sendCompanyNotice, money, shortDate, propertyName } from '../services/w
 import { logAudit } from '../utils/auditLogger.js';
 import { sendStatementWorkbook } from '../utils/statementExcel.js';
 import { statementEmail } from '../utils/statementMessages.js';
-import { loadStatement, buildStatementSummary, getCompanyOverdueStats } from '../services/statementSummary.service.js';
+import { loadStatement, buildStatementSummary, statementTitle, getCompanyOverdueStats } from '../services/statementSummary.service.js';
 
 const SELLER_ROLES = ['vendedor', 'ejecutivo_comercial', 'agent'];
 const SEND_WINDOW_MS = 10 * 60 * 1000;
@@ -75,6 +75,7 @@ const deliverStatement = async ({ loaded, channel, source, req }) => {
         balance: money(summary.balance),
         nextDue: summary.nextQuota?.dueDate ? shortDate(summary.nextQuota.dueDate) : '(sin cuotas pendientes)',
         statementUrl: summary.statementUrl,
+        title: statementTitle(loaded.contract.lot, company),
       },
     });
   } else if (channel === 'email') {
