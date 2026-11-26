@@ -5,6 +5,7 @@ import Company from '../models/Company.js';
 import mongoose from 'mongoose';
 import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import AuditLog from '../models/AuditLog.js';
+import { logAudit } from '../utils/auditLogger.js';
 import { sendEmail } from '../utils/notifications.js';
 import AppError from '../utils/AppError.js';
 import { canAssignRole, canManageMember } from '../config/permissions.js';
@@ -45,6 +46,18 @@ export const getAllUsers = async (req, res, next) => {
     const total = memberships.length;
     const paginatedMemberships = memberships.slice(skip, skip + limitNum);
 
+    // Projects of each member, so the team screen can show and take them away
+    const assignments = await UserCompany.find({ tenantId, userId: { $in: paginatedMemberships.map((m) => m._id) } })
+      .populate('companyId', 'name')
+      .lean();
+    const projectsOf = new Map();
+    for (const a of assignments) {
+      if (!a.companyId) continue;
+      const key = String(a.userId);
+      if (!projectsOf.has(key)) projectsOf.set(key, []);
+      projectsOf.get(key).push({ id: a.companyId._id, name: a.companyId.name });
+    }
+
     const users = paginatedMemberships.map((m) => ({
       id: m._id,
       accountId: m.accountId._id,
@@ -55,6 +68,7 @@ export const getAllUsers = async (req, res, next) => {
       accountStatus: m.accountId.status,
       lastLogin: m.accountId.lastLogin,
       createdAt: m.createdAt,
+      companies: projectsOf.get(String(m._id)) || [],
     }));
 
     res.json({
@@ -164,12 +178,16 @@ export const createUser = async (req, res, next) => {
       companyIds = [];
     }
 
+    if (role === 'cliente') {
+      return next(new AppError('Los compradores se crean desde Clientes, no desde Usuarios', 400));
+    }
+
     if (!canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
     }
 
     if (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds))) {
-      return next(new AppError('No puedes asignar esa empresa', 403));
+      return next(new AppError('No puedes asignar ese proyecto', 403));
     }
 
     // Check if a membership already exists in this tenant for this email
@@ -183,12 +201,12 @@ export const createUser = async (req, res, next) => {
       });
 
       if (existingMembership) {
-        return next(new AppError('This email already has a membership in this team', 400));
+        return next(new AppError('Ese correo ya tiene un usuario en esta inmobiliaria', 400));
       }
     } else {
       // Create new UserAccount
       if (!password || password.length < 8) {
-        return next(new AppError('Password is required and must be at least 8 characters', 400));
+        return next(new AppError('Escribe una contraseña de al menos 8 caracteres', 400));
       }
 
       account = await UserAccount.create({
@@ -251,7 +269,7 @@ export const updateUser = async (req, res, next) => {
     }).populate('accountId');
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     // Members may edit their own name, never their own role or status
@@ -264,15 +282,31 @@ export const updateUser = async (req, res, next) => {
       return next(new AppError('No puedes modificar a este usuario', 403));
     }
 
+    if (role && role !== membership.role && role === 'cliente') {
+      return next(new AppError('Los compradores se crean desde Clientes, no desde Usuarios', 400));
+    }
+
     if (role && role !== membership.role && !canAssignRole(req.user.role, role)) {
       return next(new AppError('No puedes asignar ese rol', 403));
+    }
+
+    // Projects to take away from the member (only ones the requester may assign)
+    const { removeCompanyIds } = req.body;
+    if (removeCompanyIds !== undefined && (!Array.isArray(removeCompanyIds) || !(await canAssignCompanies(req.user, removeCompanyIds)))) {
+      return next(new AppError('No puedes quitar ese proyecto', 403));
+    }
+    const removing = new Set((removeCompanyIds || []).map(String));
+    if (isSelf && removing.size > 0) {
+      return next(new AppError('No puedes quitarte un proyecto a ti mismo', 403));
     }
 
     let { companyIds, companyId } = req.body;
     if (!companyIds && companyId) companyIds = [companyId];
     if (companyIds && (!Array.isArray(companyIds) || !(await canAssignCompanies(req.user, companyIds)))) {
-      return next(new AppError('No puedes asignar esa empresa', 403));
+      return next(new AppError('No puedes asignar ese proyecto', 403));
     }
+    // The app always sends the open project; it never re-adds one being removed
+    if (companyIds) companyIds = companyIds.filter((id) => !removing.has(String(id)));
 
     if (role) membership.role = role;
     if (status) membership.status = status;
@@ -299,6 +333,16 @@ export const updateUser = async (req, res, next) => {
           });
         }
       }
+    }
+
+    if (removing.size > 0) {
+      await UserCompany.deleteMany({ userId: membership._id, tenantId, companyId: { $in: [...removing] } });
+      await logAudit(req, {
+        action: 'REMOVE_USER_PROJECTS',
+        module: 'USERS',
+        targetId: membership._id,
+        details: { email: membership.accountId?.email, companyIds: [...removing] },
+      });
     }
 
     // Update fullName on the account if provided
@@ -334,7 +378,7 @@ export const changeUserPassword = async (req, res, next) => {
     const { tenantId } = req.user;
 
     if (!password || password.length < 8) {
-      return next(new AppError('Password must be at least 8 characters', 400));
+      return next(new AppError('La contraseña debe tener al menos 8 caracteres', 400));
     }
 
     const membership = await User.findOne({
@@ -343,7 +387,7 @@ export const changeUserPassword = async (req, res, next) => {
     });
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     if (membership._id.toString() === req.user.userId?.toString()) {
@@ -356,7 +400,7 @@ export const changeUserPassword = async (req, res, next) => {
 
     const account = await UserAccount.findById(membership.accountId);
     if (!account) {
-      return next(new AppError('User account not found', 404));
+      return next(new AppError('No encontramos la cuenta de ese usuario', 404));
     }
 
     account.passwordHash = password;
@@ -364,7 +408,7 @@ export const changeUserPassword = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Password updated successfully',
+      message: 'Contraseña actualizada',
     });
   } catch (error) {
     next(error);
@@ -381,7 +425,7 @@ export const deleteUser = async (req, res, next) => {
 
     // Prevent deleting yourself
     if (membershipId === req.user.userId.toString()) {
-      return next(new AppError('You cannot remove your own membership', 400));
+      return next(new AppError('No puedes eliminar tu propio usuario', 400));
     }
 
     const membership = await User.findOne({
@@ -390,7 +434,7 @@ export const deleteUser = async (req, res, next) => {
     });
 
     if (!membership) {
-      return next(new AppError('User not found in this team', 404));
+      return next(new AppError('No encontramos ese usuario en esta inmobiliaria', 404));
     }
 
     if (!canManageMember(req.user.role, membership.role)) {
@@ -405,7 +449,7 @@ export const deleteUser = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'User removed from team successfully',
+      message: 'Usuario eliminado del equipo',
     });
   } catch (error) {
     next(error);
@@ -469,12 +513,12 @@ export const updateProfile = async (req, res, next) => {
     const { accountId } = req.user;
 
     if (!fullName) {
-      return next(new AppError('Full name is required', 400));
+      return next(new AppError('Escribe tu nombre completo', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     account.fullName = fullName;
@@ -482,7 +526,7 @@ export const updateProfile = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Profile updated successfully',
+      message: 'Perfil actualizado',
       data: { fullName: account.fullName }
     });
   } catch (error) {
@@ -499,12 +543,12 @@ export const changeMyPassword = async (req, res, next) => {
     const { accountId } = req.user;
 
     if (!password || password.length < 8) {
-      return next(new AppError('Password must be at least 8 characters', 400));
+      return next(new AppError('La contraseña debe tener al menos 8 caracteres', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     account.passwordHash = password;
@@ -512,7 +556,7 @@ export const changeMyPassword = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Password updated successfully'
+      message: 'Contraseña actualizada'
     });
   } catch (error) {
     next(error);
@@ -528,12 +572,12 @@ export const uploadProfileImage = async (req, res, next) => {
     const file = req.file;
 
     if (!file) {
-      return next(new AppError('Please provide an image', 400));
+      return next(new AppError('Sube una imagen', 400));
     }
 
     const account = await UserAccount.findById(accountId);
     if (!account) {
-      return next(new AppError('Account not found', 404));
+      return next(new AppError('No encontramos tu cuenta', 404));
     }
 
     // Delete old image if exists
@@ -552,7 +596,7 @@ export const uploadProfileImage = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Profile photo uploaded successfully',
+      message: 'Foto de perfil actualizada',
       data: { profileImage: imageUrl }
     });
   } catch (error) {

@@ -210,8 +210,10 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
       CallLog.countDocuments({ ...companyScope, createdAt: { $gte: startOfMonth } }),
     ]);
 
-    // 2. Lot Statistics
-    const lotMatch = { ...baseMatch, isDeleted: { $ne: true } };
+    // 2. Lot Statistics: the project's inventory for everyone (a seller sells from all of it),
+    // so the figures and the table by stage count the same lots
+    const lotMatch = { tenantId, companyId, isDeleted: { $ne: true } };
+    const reservedLots = await Lot.countDocuments({ ...lotMatch, status: 'apartado' });
     const separatedLots = await Lot.countDocuments({ ...lotMatch, status: 'separado' });
     const soldLots = await Lot.countDocuments({ ...lotMatch, status: 'vendido' });
     const availableLots = await Lot.countDocuments({ ...lotMatch, status: 'disponible' });
@@ -231,6 +233,7 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
           vendidos: { $sum: { $cond: [{ $eq: ['$status', 'vendido'] }, 1, 0] } },
           disponibles: { $sum: { $cond: [{ $eq: ['$status', 'disponible'] }, 1, 0] } },
           separados: { $sum: { $cond: [{ $eq: ['$status', 'separado'] }, 1, 0] } },
+          apartados: { $sum: { $cond: [{ $eq: ['$status', 'apartado'] }, 1, 0] } },
         }
       },
       {
@@ -240,6 +243,7 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
           vendidos: 1,
           disponibles: 1,
           separados: 1,
+          apartados: 1,
           porcentajeVendido: {
             $round: [{
               $cond: [
@@ -295,6 +299,7 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
         },
         topAdvisor,
         lotStats: {
+          reserved: reservedLots,
           separated: separatedLots,
           sold: soldLots,
           available: availableLots,

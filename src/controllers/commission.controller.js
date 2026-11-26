@@ -4,6 +4,17 @@ import AppError from '../utils/AppError.js';
 import { getNextSequence } from '../models/Counter.js';
 import { sendEmail, sendWhatsApp } from '../utils/notifications.js';
 import { uploadToR2 } from '../utils/storage.js';
+import { logAudit } from '../utils/auditLogger.js';
+
+// What the audit log keeps of a billing: which one, for how much and whose
+const auditDetails = (commission, installment, extra = {}) => ({
+  billingNumber: installment.billingNumber,
+  amount: installment.amount,
+  milestone: installment.milestoneKey === 'INITIAL_QUOTA' ? 'INITIAL_QUOTA' : `QUOTA_${installment.quotaNumber ?? ''}`,
+  sellerId: commission.sellerId,
+  contractId: commission.contractId?._id || commission.contractId,
+  ...extra,
+});
 
 // POST /commissions/upload-support — uploads a support document (PDF or image) to Cloudflare R2
 export const uploadCommissionSupport = async (req, res, next) => {
@@ -179,7 +190,7 @@ export const radicarComision = async (req, res, next) => {
     const sellerDoc = sellerUser?.accountId?.idNumber || sellerUser?.accountId?.cedula || 'N/A';
     const milestoneLabel = installment.milestoneKey === 'INITIAL_QUOTA'
       ? 'Comisión Cuota Inicial'
-      : `Comisión Cuota #${installment.quotaNumber || 6}`;
+      : (installment.quotaNumber ? `Comisión Cuota ${installment.quotaNumber}` : 'Comisión Cuota del plan');
 
     installment.status = 'FILED';
     installment.filedAt = now;
@@ -204,6 +215,7 @@ export const radicarComision = async (req, res, next) => {
     installment.rejectedAt = undefined;
     installment.rejectedReason = undefined;
     await commission.save();
+    await logAudit(req, { action: 'FILE_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment) });
 
     // Notify accountants
     await notifyAccountants(
@@ -274,6 +286,7 @@ export const aprobarComision = async (req, res, next) => {
     installment.approvedAt = new Date();
     installment.approvalNote = observacion || '';
     await commission.save();
+    await logAudit(req, { action: 'APPROVE_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment, { note: installment.approvalNote || undefined }) });
 
     await notifySeller(
       commission,
@@ -318,6 +331,7 @@ export const rechazarComision = async (req, res, next) => {
     installment.rejectedAt = new Date();
     installment.rejectedReason = rejectedReason.trim();
     await commission.save();
+    await logAudit(req, { action: 'REJECT_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment, { reason: installment.rejectedReason }) });
 
     await notifySeller(
       commission,
@@ -357,6 +371,7 @@ export const pagarComision = async (req, res, next) => {
     installment.paidBy = userId;
     installment.paidAt = new Date();
     await commission.save();
+    await logAudit(req, { action: 'PAY_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment) });
 
     await notifySeller(
       commission,

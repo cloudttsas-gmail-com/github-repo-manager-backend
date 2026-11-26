@@ -179,13 +179,57 @@ describe('Integration Test - User Management (Admin)', () => {
     expect(newAccount.passwordHash).not.toBe(oldHash); 
   });
 
+  it('lists the projects of each member', async () => {
+    const res = await request(app)
+      .get(`/api/admin-users/all`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    const seller = res.body.data.users.find((u) => u.email === sellerEmail);
+    expect(seller.companies.map((c) => String(c.id))).toEqual([String(companyId)]);
+    expect(seller.companies[0].name).toBeTruthy();
+  });
+
+  it('takes a project away from a member, even when the open project is sent along', async () => {
+    const res = await request(app)
+      .put(`/api/admin-users/update/${createdMembershipId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ companyId, removeCompanyIds: [companyId] });
+
+    expect(res.statusCode).toBe(200);
+    expect(await UserCompany.findOne({ userId: createdMembershipId, companyId })).toBeNull();
+
+    // Adding it back still works
+    const back = await request(app)
+      .put(`/api/admin-users/update/${createdMembershipId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ companyIds: [companyId] });
+    expect(back.statusCode).toBe(200);
+    expect(await UserCompany.findOne({ userId: createdMembershipId, companyId })).not.toBeNull();
+  });
+
+  it('refuses to take away a project of another tenant', async () => {
+    const res = await request(app)
+      .put(`/api/admin-users/update/${createdMembershipId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ removeCompanyIds: [new mongoose.Types.ObjectId().toString()] });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('does not create buyers from the team screen', async () => {
+    const res = await request(app)
+      .post('/api/admin-users/create')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ fullName: 'Comprador', email: `buyer.${Date.now()}@example.com`, password: 'Password123!', role: 'cliente', companyIds: [companyId] });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toMatch(/Clientes/);
+  });
+
   it('should prevent deleting your own membership (DELETE ERROR)', async () => {
     const res = await request(app)
       .delete(`/api/admin-users/delete/${adminUserId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.statusCode).toBe(400);
-    expect(res.body.message).toMatch(/cannot remove your own/i);
+    expect(res.body.message).toMatch(/no puedes eliminar tu propio usuario/i);
   });
 
   it('should delete the newly created user membership (DELETE)', async () => {

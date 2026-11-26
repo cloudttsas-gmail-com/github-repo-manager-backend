@@ -472,7 +472,7 @@ router.post('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREATE)
 });
 
 // PUT /clients/:id - Update client
-router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_CREATE), async (req, res) => {
+router.put('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_EDIT), async (req, res) => {
   try {
     const { tenantId, companyId } = req.user;
     const { id } = req.params;
