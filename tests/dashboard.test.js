@@ -64,7 +64,7 @@ describe('Dashboard figures are calculated, not fixed at 0', () => {
     const res = await request(app).get(`/api/dashboard/summary?companyId=${owner.companyId}`).set('Authorization', `Bearer ${owner.token}`);
     expect(res.statusCode).toBe(200);
     const { mora, recaudoMensual, operacion, cartera } = res.body.data;
-    expect(mora).toMatchObject({ contratosAlDia: 1, contratosMora16a30: 1, contratosMora1a15: 0, porcentajeMora: 50, dineroEnMora: 1000000 });
+    expect(mora).toMatchObject({ contratosAlDia: 1, contratosMora1a30: 1, contratosMora31a60: 0, porcentajeMora: 50, dineroEnMora: 1000000 });
     expect(recaudoMensual.mesActual).toBe(2000000);
     expect(recaudoMensual.variacion).toBeNull();
     expect(operacion.comprobantesPendientes).toBe(1);

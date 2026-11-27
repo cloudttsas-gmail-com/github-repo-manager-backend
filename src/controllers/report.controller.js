@@ -7,6 +7,8 @@ import Quota from '../models/Quota.js';
 import Client from '../models/Client.js';
 import Commission from '../models/Commission.js';
 import AppError from '../utils/AppError.js';
+import { overdueByContract } from '../services/arrears.service.js';
+import { startOfBogotaDay } from '../services/statementSummary.service.js';
 
 /**
  * Helper to compute date ranges
@@ -311,7 +313,7 @@ export const getCashFlowProjection = async (req, res, next) => {
 };
 
 /**
- * Generates advanced reports: aging portfolio (30/60/90 days),
+ * Generates advanced reports: overdue portfolio by contract (1-30, 31-60, 61-90, +90 days),
  * monthly expected vs. actual collected, and top delinquent / best behavior clients.
  */
 export const getAdvancedReports = async (req, res, next) => {
@@ -332,36 +334,24 @@ export const getAdvancedReports = async (req, res, next) => {
       status: { $in: ['pendiente', 'mora'] }
     });
 
+    // Overdue by contract, with the same ranges and rule as Inicio and Cartera: each contract
+    // falls in the range of its oldest overdue quota and carries all its overdue money
+    const companyContractIds = (await Contract.find({ tenantId, companyId }).select('_id').lean()).map((c) => c._id);
+    const overdue = await overdueByContract({ contract: { $in: companyContractIds } }, now);
+    const rangeFigures = (key) => ({ amount: overdue.ranges[key].amount, count: overdue.ranges[key].contracts });
     const aging = {
-      bucket30: { amount: 0, count: 0 }, // 1-30 days
-      bucket60: { amount: 0, count: 0 }, // 31-60 days
-      bucket90: { amount: 0, count: 0 }, // 61-90 days
-      bucketOver90: { amount: 0, count: 0 } // > 90 days
+      bucket30: rangeFigures('MORA_1_30'),
+      bucket60: rangeFigures('MORA_31_60'),
+      bucket90: rangeFigures('MORA_61_90'),
+      bucketOver90: rangeFigures('MORA_90_PLUS'),
     };
 
+    // Not yet due: the unpaid balance of quotas whose due date has not passed
+    const today = startOfBogotaDay(now);
     const carteraAlDia = { amount: 0, count: 0 };
-
-    unpaidQuotas.forEach(q => {
-      const remainingVal = q.value - (q.amountPaid || 0);
-      if (q.dueDate < now) {
-        const diffTime = Math.abs(now - q.dueDate);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (diffDays <= 30) {
-          aging.bucket30.amount += remainingVal;
-          aging.bucket30.count += 1;
-        } else if (diffDays <= 60) {
-          aging.bucket60.amount += remainingVal;
-          aging.bucket60.count += 1;
-        } else if (diffDays <= 90) {
-          aging.bucket90.amount += remainingVal;
-          aging.bucket90.count += 1;
-        } else {
-          aging.bucketOver90.amount += remainingVal;
-          aging.bucketOver90.count += 1;
-        }
-      } else {
-        carteraAlDia.amount += remainingVal;
+    unpaidQuotas.forEach((q) => {
+      if (q.dueDate && q.dueDate >= today) {
+        carteraAlDia.amount += q.value - (q.amountPaid || 0);
         carteraAlDia.count += 1;
       }
     });

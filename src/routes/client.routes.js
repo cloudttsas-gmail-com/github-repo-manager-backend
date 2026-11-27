@@ -16,6 +16,7 @@ import { buildStatementSummary, startOfBogotaDay } from '../services/statementSu
 import { sendClientStatement, shareClientStatementLink, getClientStatementDeliveries } from '../controllers/statement.controller.js';
 import { escapeRegex } from '../utils/regex.js';
 import { contractsWithoutPlan } from '../services/pending.service.js';
+import { ARREARS_RANGES } from '../services/arrears.service.js';
 
 const router = express.Router();
 
@@ -26,13 +27,7 @@ router.use(tenantMiddleware);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Days in arrears ranges of Cartera, by the oldest overdue quota (same rule as the statement)
-const MORA_RANGES = {
-  MORA_1_15: [1, 15],
-  MORA_16_30: [16, 30],
-  MORA_31_60: [31, 60],
-  MORA_61_90: [61, 90],
-  MORA_90_PLUS: [91, Infinity],
-};
+const MORA_RANGES = ARREARS_RANGES;
 const inMoraRange = ([min, max]) => ({ $and: [{ $gte: ['$diasMora', min] }, ...(max === Infinity ? [] : [{ $lte: ['$diasMora', max] }])] });
 
 /**

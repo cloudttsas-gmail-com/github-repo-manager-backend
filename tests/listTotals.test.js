@@ -74,7 +74,7 @@ describe('Clientes, Cartera and Pagos counters cover the whole project', () => {
     expect(res.body.data).toMatchObject({
       total: 5, alDia: 2, enMora: 3,
       behavior: { DISPUESTO: 2, EVASIVO: 1, INDECISO: 2 },
-      moraRanges: { MORA_1_15: 1, MORA_16_30: 0, MORA_31_60: 1, MORA_61_90: 0, MORA_90_PLUS: 1 },
+      moraRanges: { MORA_1_30: 1, MORA_31_60: 1, MORA_61_90: 0, MORA_90_PLUS: 1 },
     });
   });
 
