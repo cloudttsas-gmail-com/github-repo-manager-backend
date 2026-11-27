@@ -8,16 +8,16 @@ import { isAppliedToQuotas } from './paymentApplication.service.js';
 import { buildStatementSummary, bogotaDay } from './statementSummary.service.js';
 import { withPromiseStates } from './collectionActions.service.js';
 import { weeklyWhatsAppContacts } from './contactPolicy.service.js';
+import { ARREARS_RANGES } from './arrears.service.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const toId = (value) => new mongoose.Types.ObjectId(String(value));
 
+// The same ranges as Inicio, Cartera and the financial report; 1-15 and 16-30 still read for sends saved before
 export const MORA_RANGES = {
+  ...ARREARS_RANGES,
   MORA_1_15: [1, 15],
   MORA_16_30: [16, 30],
-  MORA_31_60: [31, 60],
-  MORA_61_90: [61, 90],
-  MORA_90_PLUS: [91, Infinity],
 };
 const MORA_FILTERS = ['all', 'al_dia', 'en_mora', ...Object.keys(MORA_RANGES)];
 export const BEHAVIORS = ['DISPUESTO', 'INDECISO', 'EVASIVO'];
