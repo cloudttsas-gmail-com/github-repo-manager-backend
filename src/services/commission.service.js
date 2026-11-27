@@ -215,7 +215,8 @@ export const syncRetroactiveCommissions = async ({ tenantId, companyId }) => {
  * the news in one lowercase sentence without a final period.
  */
 export const sendTeamCommissionNotice = async ({ companyId, account, detail }) => {
-  if (!account?.phone) return null;
+  // The template needs the sentence: never send it with an empty one
+  if (!account?.phone || !detail) return null;
   const company = await Company.findById(companyId);
   if (!company) return null;
   return sendCompanyNotice({ company, to: account.phone, notice: 'aviso_comision', values: { name: account.fullName, detail } });

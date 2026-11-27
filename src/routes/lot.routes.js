@@ -7,6 +7,7 @@ import {
   deleteLot,
   restoreLot,
   uploadLotImages,
+  removeLotImage,
   getLotsPublic,
   sellLot,
   previewLotSale,
@@ -98,5 +99,6 @@ router.post('/:id/images',
   upload.array('images', 5), 
   uploadLotImages
 );
+router.delete('/:id/images', checkPermission(PERMISSIONS.LOTES_PHOTOS), removeLotImage);
 
 export default router;

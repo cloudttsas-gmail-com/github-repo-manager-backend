@@ -1,6 +1,7 @@
 import AppError from '../utils/AppError.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 import UserAccount from '../models/UserAccount.js';
+import User from '../models/User.js';
 
 import { PERMISSIONS, hasPermission } from '../config/permissions.js';
 
@@ -33,6 +34,12 @@ export const protect = async (req, res, next) => {
     }
     if (account.status !== 'active') {
       return next(new AppError('User account is deactivated', 401));
+    }
+
+    // A deactivated access to the inmobiliaria ends the open session too, not when the token expires
+    const membership = await User.exists({ _id: decoded.userId, tenantId: decoded.tenantId, status: 'active' });
+    if (!membership) {
+      return next(new AppError('Tu acceso a esta inmobiliaria está desactivado', 401));
     }
 
     // Attach decoded token data to request
