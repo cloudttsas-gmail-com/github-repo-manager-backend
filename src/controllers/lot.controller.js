@@ -1080,7 +1080,10 @@ export const reserveLot = async (req, res, next) => {
     if (isSellerRole && isUpgrade && lot.sellerId && String(lot.sellerId) !== String(userId)) {
       return res.status(403).json({ success: false, message: 'Este inmueble está reservado a nombre de otro asesor' });
     }
-    let reservationSellerId = isSellerRole ? userId : (sellerId || null);
+    // The previous app (app-dev, while Meta reviews it) sends no seller field: it reserved in the name
+    // of whoever registered it. The current app always sends the field ('' when there is no seller).
+    const legacyClient = !Object.prototype.hasOwnProperty.call(req.body, 'sellerId');
+    let reservationSellerId = isSellerRole || legacyClient ? userId : (sellerId || null);
     if (reservationSellerId && !isSellerRole) {
       const User = (await import('../models/User.js')).default;
       const seller = mongoose.isValidObjectId(reservationSellerId)

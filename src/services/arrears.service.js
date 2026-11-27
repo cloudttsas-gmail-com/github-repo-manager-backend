@@ -14,6 +14,17 @@ export const ARREARS_RANGES = {
   MORA_90_PLUS: [91, Infinity],
 };
 
+/**
+ * The ranges of the previous app (still on app-dev while Meta reviews it). Only to answer that app;
+ * the current screens use ARREARS_RANGES.
+ */
+export const LEGACY_ARREARS_RANGES = {
+  MORA_1_15: [1, 15],
+  MORA_16_30: [16, 30],
+  MORA_31_60: [31, 60],
+  MORA_60_PLUS: [61, Infinity],
+};
+
 /** The range key for a number of days in arrears, or null when it is not overdue. */
 export const arrearsRangeOf = (days) => {
   if (!(days >= 1)) return null;
@@ -36,6 +47,7 @@ export const overdueByContract = async (quotaMatch, now = new Date()) => {
     { $group: { _id: '$contract', oldestDue: { $min: '$dueDate' }, amount: { $sum: '$pending' } } },
   ]);
   const ranges = Object.fromEntries(Object.keys(ARREARS_RANGES).map((key) => [key, { contracts: 0, amount: 0 }]));
+  const legacyRanges = Object.fromEntries(Object.keys(LEGACY_ARREARS_RANGES).map((key) => [key, 0]));
   let amount = 0;
   for (const row of rows) {
     amount += row.amount;
@@ -43,6 +55,8 @@ export const overdueByContract = async (quotaMatch, now = new Date()) => {
     const range = ranges[arrearsRangeOf(days)];
     range.contracts += 1;
     range.amount += row.amount;
+    const legacy = Object.keys(LEGACY_ARREARS_RANGES).find((key) => days >= LEGACY_ARREARS_RANGES[key][0] && days <= LEGACY_ARREARS_RANGES[key][1]);
+    legacyRanges[legacy] += 1;
   }
-  return { contracts: rows.length, amount, ranges };
+  return { contracts: rows.length, amount, ranges, legacyRanges };
 };

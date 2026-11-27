@@ -16,7 +16,7 @@ import { buildStatementSummary, startOfBogotaDay } from '../services/statementSu
 import { sendClientStatement, shareClientStatementLink, getClientStatementDeliveries } from '../controllers/statement.controller.js';
 import { escapeRegex } from '../utils/regex.js';
 import { contractsWithoutPlan } from '../services/pending.service.js';
-import { ARREARS_RANGES } from '../services/arrears.service.js';
+import { ARREARS_RANGES, LEGACY_ARREARS_RANGES } from '../services/arrears.service.js';
 
 const router = express.Router();
 
@@ -28,6 +28,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Days in arrears ranges of Cartera, by the oldest overdue quota (same rule as the statement)
 const MORA_RANGES = ARREARS_RANGES;
+const LEGACY_FILTER_RANGES = { MORA_1_15: LEGACY_ARREARS_RANGES.MORA_1_15, MORA_16_30: LEGACY_ARREARS_RANGES.MORA_16_30 };
 const inMoraRange = ([min, max]) => ({ $and: [{ $gte: ['$diasMora', min] }, ...(max === Infinity ? [] : [{ $lte: ['$diasMora', max] }])] });
 
 /**
@@ -212,7 +213,8 @@ router.get('/', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_VIEW), a
     const behaviorFilter = req.query.behavior;
     const moraOnly = req.query.moraOnly === 'true';
     const alDiaOnly = req.query.alDiaOnly === 'true';
-    const moraRange = MORA_RANGES[req.query.moraRange];
+    // The previous app (app-dev, while Meta reviews it) still filters by 1-15 and 16-30
+    const moraRange = MORA_RANGES[req.query.moraRange] || LEGACY_FILTER_RANGES[req.query.moraRange];
     // Pendientes › «Contratos sin plan de pagos»: the clients who own one
     const withoutPlan = req.query.withoutPlan === 'true';
 

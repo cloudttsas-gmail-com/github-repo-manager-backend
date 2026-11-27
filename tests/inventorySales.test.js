@@ -73,7 +73,8 @@ describe('Inventory: reservations, sellers, filters and the lots import', () => 
 
   it('a reservation without a seller stays without one', async () => {
     const lot = await newLot(2);
-    const res = await reserve(lot, { type: 'apartado' });
+    // The current app always sends the field; leaving it out is the previous app (legacyAppCompat)
+    const res = await reserve(lot, { type: 'apartado', sellerId: '' });
     expect(res.statusCode).toBe(200);
     const saved = await Lot.findById(lot._id);
     expect(saved.sellerId).toBeUndefined();
