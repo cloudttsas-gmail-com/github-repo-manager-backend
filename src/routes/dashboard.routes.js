@@ -255,6 +255,10 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
           contratosMora31a60: overdue.ranges.MORA_31_60.contracts,
           contratosMora61a90: overdue.ranges.MORA_61_90.contracts,
           contratosMora90plus: overdue.ranges.MORA_90_PLUS.contracts,
+          // The previous app's ranges (app-dev keeps it while Meta reviews it); 31-60 is shared
+          contratosMora1a15: overdue.legacyRanges.MORA_1_15,
+          contratosMora16a30: overdue.legacyRanges.MORA_16_30,
+          contratosMora60plus: overdue.legacyRanges.MORA_60_PLUS,
           porcentajeMora: totalSalesCount > 0 ? Math.round((overdue.contracts / totalSalesCount) * 1000) / 10 : 0,
           dineroEnMora: Math.round(overdue.amount),
         },

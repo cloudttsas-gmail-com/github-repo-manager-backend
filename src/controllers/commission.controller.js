@@ -428,7 +428,16 @@ export const pagarComision = async (req, res, next) => {
   try {
     const { tenantId, companyId, userId } = req.user;
     const { id } = req.params;
-    const { installmentIndex, paymentDate, paymentMethod, paymentReceiptUrl } = req.body;
+    const { installmentIndex, paymentReceiptUrl } = req.body;
+    let { paymentDate, paymentMethod } = req.body;
+
+    // The previous app (still on app-dev while Meta reviews it) sends neither field: it paid «today»
+    // without asking how. Only when both are absent; a blank field from the current app is still refused.
+    const legacyClient = paymentDate === undefined && paymentMethod === undefined;
+    if (legacyClient) {
+      paymentDate = bogotaToday();
+      paymentMethod = 'Sin registrar';
+    }
 
     if (typeof paymentDate !== 'string' || !BOGOTA_DAY.test(paymentDate) || Number.isNaN(new Date(`${paymentDate}T00:00:00-05:00`).getTime())) {
       return next(new AppError('La fecha del pago es obligatoria', 400));
