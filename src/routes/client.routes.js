@@ -407,11 +407,17 @@ router.get('/:id', companyMiddleware, checkPermission(PERMISSIONS.CLIENTES_DETAI
       };
     }));
 
+    // The buyer's portal access, so the record can set a new password with the same API as
+    // «Clave» in Usuarios › Clientes (null when the buyer has no active access)
+    const portalMembership = await User.findOne({ clientId: client._id, tenantId, role: 'cliente', status: 'active' })
+      .select('_id').lean();
+
     res.json({
       success: true,
       data: {
         ...client.toObject(),
         contracts: contractsWithStats,
+        portalAccess: portalMembership ? { userId: portalMembership._id.toString() } : null,
       },
     });
   } catch (error) {

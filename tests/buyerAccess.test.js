@@ -113,8 +113,10 @@ describe('Buyer access to the portal', () => {
     await VerificationToken.deleteMany({ clientId: { $in: [clientA._id, clientB._id] } });
     const ask = await request(app).post('/api/auth/client-password/request').send({ document: doc });
     expect(ask.statusCode).toBe(200);
-    expect(ask.body.data.phone).toMatch(/2233$/);
+    expect(ask.body.data.phone).toBeUndefined();
     const { otpToken } = ask.body.data;
+    // The code went to the phone of the first client with one
+    expect((await VerificationToken.findOne({ token: otpToken })).destination).toBe('3001112233');
 
     // The reset code does not sign in by itself
     const asLogin = await request(app).post('/api/auth/verify-client-otp').send({ otpToken, otpCode: await codeOf(otpToken) });
@@ -133,9 +135,37 @@ describe('Buyer access to the portal', () => {
     expect(newOne.body.data.requiresOtp).toBe(true);
   });
 
-  it('an unknown document gets a clear answer', async () => {
-    const res = await request(app).post('/api/auth/client-password/request').send({ document: `0${stamp}` });
-    expect(res.statusCode).toBe(404);
+  it('the forgot-password answer does not tell whether a document has access', async () => {
+    const known = await request(app).post('/api/auth/client-password/request').send({ document: doc });
+    const unknown = await request(app).post('/api/auth/client-password/request').send({ document: `0${stamp}` });
+    expect(unknown.statusCode).toBe(200);
+    expect(unknown.body.message).toBe(known.body.message);
+    expect(Object.keys(unknown.body.data)).toEqual(Object.keys(known.body.data));
+    // The token of an unknown document matches no code
+    expect(await VerificationToken.findOne({ token: unknown.body.data.otpToken })).toBeNull();
+    const reset = await request(app).post('/api/auth/client-password/reset')
+      .send({ otpToken: unknown.body.data.otpToken, otpCode: '123456', password: 'NuevaClave2026' });
+    expect(reset.statusCode).toBe(400);
+  });
+
+  it('a document that asked for too many codes gets the same answer, and no new code', async () => {
+    await VerificationToken.deleteMany({ clientId: { $in: [clientA._id, clientB._id] } });
+    const answers = [];
+    for (let i = 0; i < 5; i += 1) {
+      answers.push(await request(app).post('/api/auth/client-password/request').send({ document: doc }));
+    }
+    expect(answers.every((r) => r.statusCode === 200)).toBe(true);
+    const sent = await VerificationToken.countDocuments({ clientId: clientA._id, purpose: 'password_reset' });
+    expect(sent).toBeLessThan(5);
+    await VerificationToken.deleteMany({ clientId: { $in: [clientA._id, clientB._id] } });
+  });
+
+  it('the buyer sign-in says the same for an unknown document and a wrong password', async () => {
+    const wrong = await request(app).post('/api/auth/admin/login').send({ email: doc, password: 'no-es-esta', portal: 'cliente' });
+    const unknown = await request(app).post('/api/auth/admin/login').send({ email: `0${stamp}`, password: 'no-es-esta', portal: 'cliente' });
+    expect(wrong.statusCode).toBe(401);
+    expect(unknown.statusCode).toBe(401);
+    expect(unknown.body.message).toBe(wrong.body.message);
   });
 
   it('the buyer changes the password from the portal with the current one', async () => {
@@ -170,6 +200,21 @@ describe('Buyer access to the portal', () => {
     expect(res.body.portalAccess.skipped).toEqual(['email']);
     const account = await UserAccount.findOne({ documentoIdentidad: `${doc}1` });
     expect(account.email).toBe(`comprador.${stamp}@buyeraccess.test`);
+  });
+
+  it('the client record carries the portal access, and its password changes with the team API', async () => {
+    const record = await request(app).get(`/api/clients/${clientA._id}?companyId=${a.companyId}`).set('Authorization', `Bearer ${a.token}`);
+    expect(record.statusCode).toBe(200);
+    const { userId } = record.body.data.portalAccess;
+    const changed = await request(app).put(`/api/admin-users/change-password/${userId}`)
+      .set('Authorization', `Bearer ${a.token}`).send({ password: 'DesdeLaFicha2026', companyId: a.companyId });
+    expect(changed.statusCode).toBe(200);
+    const account = await UserAccount.findOne({ documentoIdentidad: `${doc}1` }).select('+passwordHash');
+    expect(await account.comparePassword('DesdeLaFicha2026')).toBe(true);
+
+    const noAccess = await Client.create({ tenantId: a.tenantId, companyId: a.companyId, name: 'Sin portal', idNumber: `Y${stamp}`, phone: '3007776655' });
+    const other = await request(app).get(`/api/clients/${noAccess._id}?companyId=${a.companyId}`).set('Authorization', `Bearer ${a.token}`);
+    expect(other.body.data.portalAccess).toBeNull();
   });
 
   it('the team list shows the document instead of an internal email', async () => {

@@ -5,6 +5,7 @@ import Company from '../models/Company.js';
 import UserCompany from '../models/UserCompany.js';
 import AppError from '../utils/AppError.js';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { visibleEmail, MIN_PORTAL_PASSWORD } from '../utils/portalAccount.js';
 import {
   generateAccessToken,
@@ -250,6 +251,9 @@ const buyerOfCode = async (vToken) => {
  * If user has ONE active membership → return JWT directly.
  * If user has MULTIPLE memberships → return list for selection.
  */
+// A hash with the same cost as real passwords, compared when the user does not exist
+const DUMMY_HASH = bcrypt.hashSync('operix-no-account', 12);
+
 export const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -292,7 +296,12 @@ export const login = async (req, res, next) => {
       }
     }
 
-    if (!account || !(await account.comparePassword(password))) {
+    // An unknown user costs the same hash check as a wrong password, so neither the message
+    // nor the time tells whether the document or email has an account
+    const passwordOk = account
+      ? await account.comparePassword(password)
+      : (await bcrypt.compare(String(password), DUMMY_HASH), false);
+    if (!passwordOk) {
       return next(new AppError('Usuario o contraseña incorrectos', 401));
     }
 
@@ -403,18 +412,29 @@ export const verifyClientOtp = async (req, res, next) => {
 /**
  * POST /auth/client-password/request { document }
  * A buyer who forgot the password asks for a code to the phone the company has on file.
+ * The answer is the same whether or not the document has access, so it never tells who is a
+ * buyer: an unknown document, one without a phone or one that already asked for several codes
+ * gets a token that matches no code.
  */
+export const RESET_REQUEST_MESSAGE = 'Si ese documento tiene acceso al portal, te enviamos un código por WhatsApp al celular registrado.';
+
 export const requestClientPasswordReset = async (req, res, next) => {
   try {
     const document = String(req.body?.document || '').trim();
     if (!document) return next(new AppError('Escribe tu número de documento', 400));
+    let otpToken = crypto.randomBytes(32).toString('hex');
     const account = await UserAccount.findOne({ documentoIdentidad: document });
-    const memberships = account ? await activeClientMemberships(account._id) : [];
-    if (!account || account.status !== 'active' || memberships.length === 0) {
-      return next(new AppError('No encontramos un acceso al portal con ese documento. Pídeselo a tu inmobiliaria.', 404));
+    const memberships = account && account.status === 'active' ? await activeClientMemberships(account._id) : [];
+    if (memberships.length > 0) {
+      try {
+        ({ otpToken } = await sendBuyerCode(memberships, 'password_reset'));
+      } catch (error) {
+        // No phone on file (400) or too many codes (429): answer as if nothing happened.
+        // A failed WhatsApp send (502) is not about the document, so the buyer hears about it
+        if (![400, 429].includes(error.statusCode)) throw error;
+      }
     }
-    const sent = await sendBuyerCode(memberships, 'password_reset');
-    res.json({ success: true, data: sent });
+    res.json({ success: true, message: RESET_REQUEST_MESSAGE, data: { otpToken } });
   } catch (error) {
     next(error);
   }
