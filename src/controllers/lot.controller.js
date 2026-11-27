@@ -216,11 +216,8 @@ export const getLots = async (req, res, next) => {
       // Map back to lots
       lots = lots.map((l) => {
         const lotIdStr = l._id.toString();
-        if (lotSellerMap[lotIdStr]) {
-          const lotObj = l.toObject();
-          lotObj.sellerId = lotSellerMap[lotIdStr];
-          return lotObj;
-        }
+        // The lots come from .lean(): plain objects, no toObject()
+        if (lotSellerMap[lotIdStr]) return { ...l, sellerId: lotSellerMap[lotIdStr] };
         return l;
       });
     }
