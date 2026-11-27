@@ -395,7 +395,8 @@ export const deshacerAprobacionComision = async (req, res, next) => {
     await notifySeller(
       commission,
       `La aprobación de tu cuenta de cobro #${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} se deshizo y quedó otra vez en revisión. Motivo: ${cleanReason}.`,
-      'Aprobación de cuenta de cobro deshecha'
+      'Aprobación de cuenta de cobro deshecha',
+      `la aprobación de tu cuenta de cobro n.º ${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} se deshizo y quedó otra vez en revisión (motivo: ${cleanReason.replace(/\s+/g, ' ')})`,
     );
 
     res.json({

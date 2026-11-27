@@ -3,7 +3,7 @@ import Lot from '../models/Lot.js';
 import Client from '../models/Client.js';
 import Contract from '../models/Contract.js';
 import Quota from '../models/Quota.js';
-import { uploadToR2 } from '../utils/storage.js';
+import { uploadToR2, deleteFromR2 } from '../utils/storage.js';
 import { logAudit } from '../utils/auditLogger.js';
 import { checkLotExpirations } from '../utils/lotExpiration.js';
 import { buildUnitKey, buildNomenclature, normalizePropertyType } from '../utils/propertyIdentifier.js';
@@ -612,6 +612,36 @@ export const uploadLotImages = async (req, res, next) => {
       success: true,
       data: lot,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** Takes one photo off a lot's catalog and deletes its file */
+export const removeLotImage = async (req, res, next) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string') return next(new AppError('Falta la imagen que quieres quitar', 400));
+
+    const lot = await Lot.findOne({ _id: req.params.id, tenantId: req.user.tenantId });
+    if (!lot) return next(new AppError('Lote no encontrado', 404));
+    if (lot.isDeleted) return next(new AppError('No se pueden quitar imágenes de un lote eliminado', 400));
+    if (!(lot.images || []).includes(url)) return next(new AppError('Esa imagen no está en el lote', 404));
+
+    lot.images = lot.images.filter((image) => image !== url);
+    await lot.save();
+
+    // The lot no longer shows it; a file left behind in storage is not worth failing the request
+    deleteFromR2(url).catch((error) => console.error('[lots] could not delete image file:', error.message));
+
+    await logAudit(req, {
+      action: 'REMOVE_LOT_IMAGE',
+      module: 'LOTS',
+      targetId: lot._id,
+      details: { lotNumber: lot.lotNumber, nomenclature: lot.nomenclature },
+    });
+
+    res.status(200).json({ success: true, data: lot });
   } catch (error) {
     next(error);
   }

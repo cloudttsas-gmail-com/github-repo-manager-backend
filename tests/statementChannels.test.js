@@ -233,12 +233,15 @@ describe('Account statement in every channel', () => {
 
     beforeAll(async () => {
       const account = await UserAccount.create({ email: `portal.${stamp}@stmt.test`, passwordHash: password, fullName: 'Ana Compradora', status: 'active' });
+      // Each session needs a real, active access to its inmobiliaria, like the portal login gives
+      const access = await User.create({ accountId: account._id, tenantId: a.tenantId, role: 'cliente', clientId: clientA._id });
       portalToken = generateAccessToken({
-        accountId: account._id, userId: new mongoose.Types.ObjectId(), tenantId: a.tenantId, role: 'cliente', clientId: clientA._id, companies: [],
+        accountId: account._id, userId: access._id, tenantId: a.tenantId, role: 'cliente', clientId: clientA._id, companies: [],
       });
       const other = await UserAccount.create({ email: `portal.b.${stamp}@stmt.test`, passwordHash: password, fullName: 'Otro Cliente', status: 'active' });
+      const otherAccess = await User.create({ accountId: other._id, tenantId: b.tenantId, role: 'cliente', clientId: clientB._id });
       otherPortalToken = generateAccessToken({
-        accountId: other._id, userId: new mongoose.Types.ObjectId(), tenantId: b.tenantId, role: 'cliente', clientId: clientB._id, companies: [],
+        accountId: other._id, userId: otherAccess._id, tenantId: b.tenantId, role: 'cliente', clientId: clientB._id, companies: [],
       });
     });
 

@@ -51,7 +51,9 @@ describe('Buyer portal data for the redesign', () => {
       { ...base, amount: 10000, status: 'RECHAZADO', rejectedReason: 'El comprobante no se lee' },
     ]);
     const account = await UserAccount.create({ email: `buyer.${stamp}@portal.test`, passwordHash: password, fullName: 'Ana Portal', status: 'active' });
-    token = generateAccessToken({ accountId: account._id, userId: new mongoose.Types.ObjectId(), tenantId: org.tenantId, role: 'cliente', clientId: buyer._id, companies: [] });
+    // The session needs a real, active access to the inmobiliaria, like the portal login gives
+    const membership = await User.create({ accountId: account._id, tenantId: org.tenantId, role: 'cliente', clientId: buyer._id });
+    token = generateAccessToken({ accountId: account._id, userId: membership._id, tenantId: org.tenantId, role: 'cliente', clientId: buyer._id, companies: [] });
   });
 
   afterAll(async () => {
