@@ -11,6 +11,7 @@ import { sendEmail } from '../utils/notifications.js';
 import { agencyName, inProject } from '../utils/agency.js';
 import { sendCompanyNotice, money, shortDate, propertyName } from '../services/whatsappTemplates.service.js';
 import { logAudit } from '../utils/auditLogger.js';
+import { isWithinContactHours, nextContactWindow, resolveContactPolicy } from '../services/contactPolicy.service.js';
 import { sendStatementWorkbook } from '../utils/statementExcel.js';
 import { statementEmail } from '../utils/statementMessages.js';
 import { loadStatement, buildStatementSummary, statementTitle, getCompanyOverdueStats } from '../services/statementSummary.service.js';
@@ -55,6 +56,9 @@ const recordDelivery = async ({ loaded, channel, source, status = 'done', destin
  */
 const deliverStatement = async ({ loaded, channel, source, req }) => {
   const { client, company, summary } = loaded;
+  // Sent by the inmobiliaria without the buyer asking, it shows balance and arrears: a collection
+  // contact under Ley 2300. A statement the buyer requests (portal, public link) is exempt (art. 8).
+  if (source === 'panel') assertPanelContactAllowed(client, company);
   const agency = await agencyName(company, 'tu inmobiliaria');
 
   let destination;
@@ -100,6 +104,21 @@ const deliveryMessage = (channel, status) => {
   if (status === 'disabled') return `Los avisos están apagados en este ambiente: el estado de cuenta no salió por ${where}, pero quedó registrado.`;
   if (status === 'failed') return `No pudimos enviar el estado de cuenta por ${where}. Intenta de nuevo.`;
   return `Estado de cuenta enviado por ${where}.`;
+};
+
+const WINDOW_FORMAT = { timeZone: 'America/Bogota', weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' };
+
+/** The panel may only send a statement inside the project's contact hours and never to a buyer who opted out. */
+const assertPanelContactAllowed = (client, company, now = new Date()) => {
+  if (client?.contactConsent?.status === 'baja') {
+    throw new AppError('El comprador pidió no recibir mensajes de cobro (Ley 2300). No se le puede enviar el estado de cuenta; si lo pide, puede descargarlo desde su portal.', 409);
+  }
+  const policy = resolveContactPolicy(company?.contactPolicy);
+  if (!isWithinContactHours(now, policy)) {
+    const next = nextContactWindow(now, policy);
+    const when = next ? ` Puedes enviarlo desde el ${next.toLocaleString('es-CO', WINDOW_FORMAT)}.` : '';
+    throw new AppError(`Fuera del horario permitido por la Ley 2300 para enviar el estado de cuenta.${when}`, 409);
+  }
 };
 
 /** Too many self-service sends would let anyone with a session flood the inbox. */

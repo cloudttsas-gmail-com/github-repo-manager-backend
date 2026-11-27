@@ -176,6 +176,33 @@ describe('Account statement in every channel', () => {
   });
 
   describe('panel: send the statement', () => {
+    // Ley 2300: the panel sends only inside the contact hours. Only Date is faked, timers stay real.
+    const ONLY_DATE = { doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] };
+    const at = (iso) => { jest.useFakeTimers(ONLY_DATE); jest.setSystemTime(new Date(iso)); };
+    beforeEach(() => at('2026-11-25T10:00:00-05:00')); // a Wednesday morning
+    afterEach(() => jest.useRealTimers());
+
+    it('outside the contact hours the panel cannot send it, and says from when it can', async () => {
+      at('2026-11-22T10:00:00-05:00'); // a Sunday
+      const res = await request(app).post(`/api/clients/statement/${contractA._id}/send?companyId=${a.companyId}`)
+        .set('Authorization', `Bearer ${a.token}`).send({ channel: 'email' });
+      expect(res.statusCode).toBe(409);
+      expect(res.body.message).toMatch(/Ley 2300/);
+      expect(res.body.message).toMatch(/lunes/);
+    });
+
+    it('a buyer who opted out does not get it from the panel', async () => {
+      await Client.updateOne({ _id: clientA._id }, { contactConsent: { status: 'baja', updatedAt: new Date(), source: 'whatsapp' } });
+      try {
+        const res = await request(app).post(`/api/clients/statement/${contractA._id}/send?companyId=${a.companyId}`)
+          .set('Authorization', `Bearer ${a.token}`).send({ channel: 'whatsapp' });
+        expect(res.statusCode).toBe(409);
+        expect(res.body.message).toMatch(/no recibir mensajes de cobro/);
+      } finally {
+        await Client.updateOne({ _id: clientA._id }, { $unset: { contactConsent: 1 } });
+      }
+    });
+
     it('sends by email to the registered address and records it in the history', async () => {
       const res = await request(app).post(`/api/clients/statement/${contractA._id}/send?companyId=${a.companyId}`)
         .set('Authorization', `Bearer ${a.token}`).send({ channel: 'email', to: 'someone@else.test' });
@@ -272,6 +299,17 @@ describe('Account statement in every channel', () => {
       expect(res.statusCode).toBe(200);
       const last = await StatementDelivery.findOne({ contractId: contractA._id, source: 'portal', channel: 'email' }).sort({ createdAt: -1 });
       expect(last.destination).toBe(clientA.email);
+    });
+
+    it('the buyer asking for it gets it any day: Ley 2300 exempts what the buyer requests', async () => {
+      jest.useFakeTimers({ doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+      jest.setSystemTime(new Date('2026-11-22T22:00:00-05:00')); // Sunday night
+      try {
+        const res = await request(app).post(`/api/portal/statement/${contractA._id}/send-email`).set('Authorization', `Bearer ${portalToken}`);
+        expect(res.statusCode).toBe(200);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 
