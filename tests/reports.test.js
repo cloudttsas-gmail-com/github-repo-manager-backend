@@ -77,7 +77,11 @@ describe('Integration Test - Reports API', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.salesThisMonth).toBe(0);
+    // The report now covers a period (current month by default) instead of «this month»
+    expect(res.body.data.period).toBe('current_month');
+    expect(res.body.data.salesInPeriod).toBe(0);
+    expect(res.body.data.totalValueInPeriod).toBe(0);
+    expect(res.body.data.topAdvisors).toEqual([]);
     expect(res.body.data.separatedLots).toBe(0);
     expect(res.body.data.topAdvisor).toBeNull();
     expect(res.body.data.lotStats).toBeInstanceOf(Array);
@@ -140,10 +144,12 @@ describe('Integration Test - Reports API', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.data.salesThisMonth).toBe(1);
+    expect(res.body.data.salesInPeriod).toBe(1);
+    expect(res.body.data.totalValueInPeriod).toBe(100000);
     expect(res.body.data.separatedLots).toBe(1);
     expect(res.body.data.topAdvisor.name).toBe('Reports Tester');
-    expect(res.body.data.topAdvisor.count).toBe(1);
+    expect(res.body.data.topAdvisor.salesCount).toBe(1);
+    expect(res.body.data.topAdvisor.totalSold).toBe(100000);
 
     // Verify lotStats
     const lotStats = res.body.data.lotStats;

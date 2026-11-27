@@ -285,16 +285,43 @@ describe('Integration Test - Lots API', () => {
     // Con verificar que están asociadas en BD es suficiente.
   });
 
-  it('should delete a lot (DELETE)', async () => {
+  it('should refuse to delete a lot with an active contract', async () => {
     const res = await request(app)
       .delete(`/api/lots/${testLotId}?companyId=${companyId}`)
       .set('Authorization', `Bearer ${adminToken}`);
 
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toMatch(/contrato activo/i);
+
+    const dbLot = await Lot.findById(testLotId);
+    expect(dbLot.isDeleted).toBe(false);
+  });
+
+  // Deleting a lot is a soft delete (archived with who/when/why), not a hard delete
+  it('should soft-delete an available lot (DELETE)', async () => {
+    const created = await request(app)
+      .post('/api/lots')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ companyId, stage: 'Fase 1', nomenclature: 'Manzana A', lotNumber: '11', area: 120, price: 50000000 });
+    expect(created.statusCode).toBe(201);
+    const freeLotId = created.body.data._id;
+
+    const res = await request(app)
+      .delete(`/api/lots/${freeLotId}?companyId=${companyId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Lote duplicado' });
+
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
 
-    // DIRECT DB ASSERTION: Aseguramos que la BD responda null
-    const dbLot = await Lot.findById(testLotId);
-    expect(dbLot).toBeNull();
+    const dbLot = await Lot.findById(freeLotId);
+    expect(dbLot.isDeleted).toBe(true);
+    expect(dbLot.deletedAt).toBeDefined();
+    expect(dbLot.deletedReason).toBe('Lote duplicado');
+
+    const list = await request(app)
+      .get(`/api/lots?companyId=${companyId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(list.body.data.lots.some((l) => l._id === freeLotId)).toBe(false);
   });
 });

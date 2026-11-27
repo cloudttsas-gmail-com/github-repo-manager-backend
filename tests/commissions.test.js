@@ -163,16 +163,31 @@ describe('Integration Test - Commission Plans API', () => {
     expect(sixth.amount).toBe(1000000);
   });
 
-  it('should NOT build a Commission when the contract CI % has no tier', async () => {
-    const client = await Client.create({ tenantId, companyId, name: 'Client CI 25', idNumber: '444555666' });
+  // A CI % between tiers falls into the highest tier it reaches ("30% o más" rule), so only a CI %
+  // below the lowest tier (10%) has no tier.
+  it('should NOT build a Commission when the contract CI % is below every tier', async () => {
+    const client = await Client.create({ tenantId, companyId, name: 'Client CI 5', idNumber: '444555666' });
     const lot = await Lot.create({ tenantId, companyId, lotNumber: 'LC2', status: 'vendido', sellerId, price: 100000000 });
+    const contract = await Contract.create({
+      tenantId, companyId, client: client._id, lot: lot._id, sellerId,
+      contractDate: new Date(), totalValue: 100000000, initialQuotaPercentage: 5, status: 'ACTIVO',
+    });
+
+    const commission = await buildCommissionForContract({ contract, tenantId, companyId });
+    expect(commission).toBeNull();
+  });
+
+  it('should use the highest tier the contract CI % reaches when it falls between tiers', async () => {
+    const client = await Client.create({ tenantId, companyId, name: 'Client CI 25', idNumber: '444555667' });
+    const lot = await Lot.create({ tenantId, companyId, lotNumber: 'LC2B', status: 'vendido', sellerId, price: 100000000 });
     const contract = await Contract.create({
       tenantId, companyId, client: client._id, lot: lot._id, sellerId,
       contractDate: new Date(), totalValue: 100000000, initialQuotaPercentage: 25, status: 'ACTIVO',
     });
 
     const commission = await buildCommissionForContract({ contract, tenantId, companyId });
-    expect(commission).toBeNull();
+    expect(commission).not.toBeNull();
+    expect(commission.installments.find((i) => i.milestoneKey === 'INITIAL_QUOTA').amount).toBe(4000000);
   });
 
   it('should support percentage plans with global milestones (portion split)', async () => {
@@ -274,8 +289,24 @@ describe('Integration Test - Commission Plans API', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send(body);
 
+    // Filing requires the four support documents
+    const supportDocs = {
+      invoiceUrl: 'https://files.test/invoice.pdf',
+      socialSecurityUrl: 'https://files.test/social-security.pdf',
+      rutUrl: 'https://files.test/rut.pdf',
+      bankCertUrl: 'https://files.test/bank-cert.pdf',
+    };
+    const payment = {
+      paymentDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' }),
+      paymentMethod: 'Transferencia desde Bancolombia',
+    };
+
+    // Radicar sin soportes → 400
+    const radicarNoDocs = await api('radicar', { installmentIndex: 0 });
+    expect(radicarNoDocs.statusCode).toBe(400);
+
     // Radicar desembolso inicial (index 0)
-    const radicarRes = await api('radicar', { installmentIndex: 0 });
+    const radicarRes = await api('radicar', { installmentIndex: 0, ...supportDocs });
     expect(radicarRes.statusCode).toBe(200);
     expect(radicarRes.body.data.commission.installments[0].status).toBe('FILED');
     expect(radicarRes.body.data.commission.installments[0].billingNumber).toBeGreaterThan(0);
@@ -291,7 +322,7 @@ describe('Integration Test - Commission Plans API', () => {
     expect(rejectRes.body.data.commission.installments[0].rejectedReason).toContain('no coinciden');
 
     // Re-radicar desde REJECTED → FILED con nuevo consecutivo
-    const reRadicarRes = await api('radicar', { installmentIndex: 0 });
+    const reRadicarRes = await api('radicar', { installmentIndex: 0, ...supportDocs });
     expect(reRadicarRes.statusCode).toBe(200);
     expect(reRadicarRes.body.data.commission.installments[0].status).toBe('FILED');
 
@@ -302,11 +333,11 @@ describe('Integration Test - Commission Plans API', () => {
     expect(aprobarRes.body.data.commission.installments[0].approvedAt).toBeDefined();
 
     // Pagar desde FILED → 400
-    const payFiled = await api('pagar', { installmentIndex: 1 });
+    const payFiled = await api('pagar', { installmentIndex: 1, ...payment });
     expect(payFiled.statusCode).toBe(400);
 
     // Pagar → PAID
-    const pagarRes = await api('pagar', { installmentIndex: 0 });
+    const pagarRes = await api('pagar', { installmentIndex: 0, ...payment });
     expect(pagarRes.statusCode).toBe(200);
     expect(pagarRes.body.data.commission.installments[0].status).toBe('PAID');
     expect(pagarRes.body.data.commission.installments[0].paidAt).toBeDefined();
