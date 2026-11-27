@@ -7,7 +7,7 @@ import PaymentAttempt from '../models/PaymentAttempt.js';
 import Escalation from '../models/Escalation.js';
 import Message from '../models/Message.js';
 import CallLog from '../models/CallLog.js';
-import { startOfBogotaDay } from '../services/statementSummary.service.js';
+import { overdueByContract } from '../services/arrears.service.js';
 import { protect, checkPermission } from '../middleware/auth.js';
 import { PERMISSIONS } from '../config/permissions.js';
 import { tenantMiddleware } from '../middleware/tenant.js';
@@ -17,7 +17,6 @@ import { buildPendingItems } from '../services/pending.service.js';
 
 const router = express.Router();
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 /** Start of the Bogotá month `offset` months away from the one `now` falls in. */
@@ -39,32 +38,6 @@ const collectedBetween = async (contractIds, from, to) => {
     { $group: { _id: null, total: { $sum: { $subtract: [{ $ifNull: ['$amount', 0] }, { $ifNull: ['$unappliedAmount', 0] }] } } } },
   ]);
   return row?.total || 0;
-};
-
-/**
- * Overdue figures by contract, with the statement's rule (a quota is overdue from the
- * day after its due date, in Bogotá). Each contract falls in the bucket of its oldest
- * overdue quota.
- */
-const overdueByContract = async (contractIds, now = new Date()) => {
-  const today = startOfBogotaDay(now);
-  const rows = await Quota.aggregate([
-    { $match: { contract: { $in: contractIds }, status: { $ne: 'pagado' }, dueDate: { $lt: today } } },
-    { $addFields: { pending: { $subtract: [{ $ifNull: ['$value', 0] }, { $ifNull: ['$amountPaid', 0] }] } } },
-    { $match: { pending: { $gt: 0 } } },
-    { $group: { _id: '$contract', oldestDue: { $min: '$dueDate' }, amount: { $sum: '$pending' } } },
-  ]);
-  const buckets = { mora1a15: 0, mora16a30: 0, mora31a60: 0, mora60plus: 0 };
-  let amount = 0;
-  for (const row of rows) {
-    amount += row.amount;
-    const days = Math.max(1, Math.ceil((today - new Date(row.oldestDue)) / DAY_MS));
-    if (days <= 15) buckets.mora1a15 += 1;
-    else if (days <= 30) buckets.mora16a30 += 1;
-    else if (days <= 60) buckets.mora31a60 += 1;
-    else buckets.mora60plus += 1;
-  }
-  return { contracts: rows.length, amount, ...buckets };
 };
 
 router.use(protect);
@@ -195,7 +168,7 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
 
     // Overdue, collected this month and operation figures
     const contractIds = await dashboardContractIds(baseMatch);
-    const overdue = await overdueByContract(contractIds, now);
+    const overdue = await overdueByContract({ contract: { $in: contractIds } }, now);
     const previousMonthStart = startOfBogotaMonth(now, -1).start;
     const [mesActual, mesAnterior] = await Promise.all([
       collectedBetween(contractIds, startOfMonth, new Date(endOfMonth.getTime() + 1)),
@@ -278,10 +251,10 @@ router.get('/summary', companyMiddleware, checkPermission(PERMISSIONS.CARTERA_DA
         mora: {
           totalContratosActivos: totalSalesCount,
           contratosAlDia: Math.max(0, totalSalesCount - overdue.contracts),
-          contratosMora1a15: overdue.mora1a15,
-          contratosMora16a30: overdue.mora16a30,
-          contratosMora31a60: overdue.mora31a60,
-          contratosMora60plus: overdue.mora60plus,
+          contratosMora1a30: overdue.ranges.MORA_1_30.contracts,
+          contratosMora31a60: overdue.ranges.MORA_31_60.contracts,
+          contratosMora61a90: overdue.ranges.MORA_61_90.contracts,
+          contratosMora90plus: overdue.ranges.MORA_90_PLUS.contracts,
           porcentajeMora: totalSalesCount > 0 ? Math.round((overdue.contracts / totalSalesCount) * 1000) / 10 : 0,
           dineroEnMora: Math.round(overdue.amount),
         },

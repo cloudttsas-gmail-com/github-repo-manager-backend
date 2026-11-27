@@ -17,6 +17,14 @@ const auditDetails = (commission, installment, extra = {}) => ({
   ...extra,
 });
 
+// Adds a step to the billing's history
+const addHistory = (installment, action, userId, note) => {
+  installment.history = [...(installment.history || []), { action, at: new Date(), by: userId, note: note || undefined }];
+};
+
+const BOGOTA_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const bogotaToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+
 // POST /commissions/upload-support — uploads a support document (PDF or image) to Cloudflare R2
 export const uploadCommissionSupport = async (req, res, next) => {
   try {
@@ -209,6 +217,7 @@ export const radicarComision = async (req, res, next) => {
     installment.rejectedBy = undefined;
     installment.rejectedAt = undefined;
     installment.rejectedReason = undefined;
+    addHistory(installment, 'FILED', userId);
     await commission.save();
     await logAudit(req, { action: 'FILE_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment) });
 
@@ -284,6 +293,7 @@ export const aprobarComision = async (req, res, next) => {
     installment.approvedBy = userId;
     installment.approvedAt = new Date();
     installment.approvalNote = observacion || '';
+    addHistory(installment, 'APPROVED', userId, installment.approvalNote);
     await commission.save();
     await logAudit(req, { action: 'APPROVE_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment, { note: installment.approvalNote || undefined }) });
 
@@ -330,6 +340,7 @@ export const rechazarComision = async (req, res, next) => {
     installment.rejectedBy = userId;
     installment.rejectedAt = new Date();
     installment.rejectedReason = rejectedReason.trim();
+    addHistory(installment, 'REJECTED', userId, installment.rejectedReason);
     await commission.save();
     await logAudit(req, { action: 'REJECT_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment, { reason: installment.rejectedReason }) });
 
@@ -350,12 +361,90 @@ export const rechazarComision = async (req, res, next) => {
   }
 };
 
-// POST /commissions/:id/pagar — treasury/accountant marks the billing as paid
+// POST /commissions/:id/deshacer-aprobacion — an approved, unpaid billing goes back to filed (reason required)
+export const deshacerAprobacionComision = async (req, res, next) => {
+  try {
+    const { tenantId, companyId, userId } = req.user;
+    const { id } = req.params;
+    const { installmentIndex, reason } = req.body;
+
+    const cleanReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!cleanReason) {
+      return next(new AppError('El motivo para deshacer la aprobación es obligatorio', 400));
+    }
+
+    const commission = await Commission.findOne({ _id: id, tenantId, companyId });
+    if (!commission) return next(new AppError('Comisión no encontrada', 404));
+
+    const found = getInstallment(commission, installmentIndex);
+    if (!found) return next(new AppError('Desembolso no encontrado en la comisión', 400));
+    const { installment } = found;
+
+    if (installment.status !== 'APPROVED') {
+      return next(new AppError('Solo se puede deshacer la aprobación de una cuenta de cobro aprobada y sin pagar', 400));
+    }
+
+    installment.status = 'FILED';
+    installment.approvedBy = undefined;
+    installment.approvedAt = undefined;
+    installment.approvalNote = undefined;
+    addHistory(installment, 'APPROVAL_REVERTED', userId, cleanReason);
+    await commission.save();
+    await logAudit(req, { action: 'REVERT_COMMISSION_APPROVAL', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment, { reason: cleanReason }) });
+
+    await notifySeller(
+      commission,
+      `La aprobación de tu cuenta de cobro #${installment.billingNumber} por $${installment.amount.toLocaleString('es-CO')} se deshizo y quedó otra vez en revisión. Motivo: ${cleanReason}.`,
+      'Aprobación de cuenta de cobro deshecha'
+    );
+
+    res.json({
+      success: true,
+      message: 'La cuenta de cobro volvió a radicada',
+      data: { commission },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /commissions/upload-payment-receipt — the payer uploads the payment receipt (PDF or image) to Cloudflare R2
+export const uploadCommissionPaymentReceipt = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return next(new AppError('No se subió ningún archivo', 400));
+    }
+    const fileUrl = await uploadToR2(req.file, 'commissions/payment_receipts');
+    res.json({ success: true, data: { url: fileUrl } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// POST /commissions/:id/pagar — treasury/accountant marks the billing as paid, with the payment date,
+// how it was paid (or the source bank) and an optional receipt
 export const pagarComision = async (req, res, next) => {
   try {
     const { tenantId, companyId, userId } = req.user;
     const { id } = req.params;
-    const { installmentIndex } = req.body;
+    const { installmentIndex, paymentDate, paymentMethod, paymentReceiptUrl } = req.body;
+
+    if (typeof paymentDate !== 'string' || !BOGOTA_DAY.test(paymentDate) || Number.isNaN(new Date(`${paymentDate}T00:00:00-05:00`).getTime())) {
+      return next(new AppError('La fecha del pago es obligatoria', 400));
+    }
+    if (paymentDate > bogotaToday()) {
+      return next(new AppError('La fecha del pago no puede ser posterior a hoy', 400));
+    }
+    const cleanMethod = typeof paymentMethod === 'string' ? paymentMethod.trim() : '';
+    if (!cleanMethod) {
+      return next(new AppError('La forma de pago o el banco de origen es obligatorio', 400));
+    }
+    if (cleanMethod.length > 120) {
+      return next(new AppError('La forma de pago o el banco de origen es muy largo (máximo 120 caracteres)', 400));
+    }
+    if (paymentReceiptUrl && (typeof paymentReceiptUrl !== 'string' || !/^https?:\/\//.test(paymentReceiptUrl))) {
+      return next(new AppError('El comprobante del pago no es válido', 400));
+    }
 
     const commission = await Commission.findOne({ _id: id, tenantId, companyId });
     if (!commission) return next(new AppError('Comisión no encontrada', 404));
@@ -371,8 +460,17 @@ export const pagarComision = async (req, res, next) => {
     installment.status = 'PAID';
     installment.paidBy = userId;
     installment.paidAt = new Date();
+    installment.paymentDate = new Date(`${paymentDate}T00:00:00-05:00`);
+    installment.paymentMethod = cleanMethod;
+    installment.paymentReceiptUrl = paymentReceiptUrl || undefined;
+    addHistory(installment, 'PAID', userId, cleanMethod);
     await commission.save();
-    await logAudit(req, { action: 'PAY_COMMISSION', module: 'COMMISSIONS', targetId: commission._id, details: auditDetails(commission, installment) });
+    await logAudit(req, {
+      action: 'PAY_COMMISSION',
+      module: 'COMMISSIONS',
+      targetId: commission._id,
+      details: auditDetails(commission, installment, { paymentDate, paymentMethod: cleanMethod, paymentReceiptUrl: installment.paymentReceiptUrl }),
+    });
 
     await notifySeller(
       commission,

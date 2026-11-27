@@ -1,5 +1,17 @@
 import mongoose from 'mongoose';
 
+// One step in the life of a billing: who did what and when, with the note or reason given
+const historyEntrySchema = new mongoose.Schema({
+  action: {
+    type: String,
+    enum: ['FILED', 'APPROVED', 'REJECTED', 'APPROVAL_REVERTED', 'PAID'],
+    required: true,
+  },
+  at: { type: Date, default: Date.now },
+  by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  note: String,
+}, { _id: false });
+
 const installmentSchema = new mongoose.Schema({
   milestoneKey: {
     type: String,
@@ -40,9 +52,14 @@ const installmentSchema = new mongoose.Schema({
   approvalNote: String,
   paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   paidAt: Date,
+  // What the payer reports: the day the money was sent, how or from which bank, and an optional receipt
+  paymentDate: Date,
+  paymentMethod: String,
+  paymentReceiptUrl: String,
   rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   rejectedAt: Date,
   rejectedReason: String,
+  history: [historyEntrySchema],
 }, { _id: false });
 
 const commissionSchema = new mongoose.Schema({
